@@ -17,6 +17,7 @@ class GeneralModel(torch.nn.Module):
         self.layers = torch.nn.ModuleDict()
         if gnn_param['arch'] == 'transformer_attention':
             for h in range(sample_param['history']):
+                # how many past temporal snapshots TGAT will use at once when updating the current graph
                 self.layers['l0h' + str(h)] = TransfomerAttentionLayer(self.dim_node_input, dim_edge, gnn_param['dim_time'], gnn_param['att_head'], train_param['dropout'], train_param['att_dropout'], gnn_param['dim_out'], combined=combined)
             for l in range(1, gnn_param['layer']):
                 for h in range(sample_param['history']):
@@ -32,18 +33,26 @@ class GeneralModel(torch.nn.Module):
         self.edge_predictor = EdgePredictor(gnn_param['dim_out'])        
     
     def forward(self, mfgs, neg_samples=1):
-        out = list()
+        # mfgs Mini-batch frontier graphs
+        # mfgs[l][h]: the l-th layer, h-th history graph
+        out = list()# store the embeddings of destination nodes from the last layer
         for l in range(self.gnn_param['layer']):
             for h in range(self.sample_param['history']):
-                rst = self.layers['l' + str(l) + 'h' + str(h)](mfgs[l][h])
+                rst = self.layers['l' + str(l) + 'h' + str(h)](mfgs[l][h])# mfgs[l][h] is the DGL block that contains srcdata stuff
+                # shape is [num_dst_nodes, dim_out]
                 if 'time_transform' in self.gnn_param and self.gnn_param['time_transform'] == 'JODIE':
                     rst = self.layers['l0h' + str(h) + 't'](rst, mfgs[l][h].srcdata['mem_ts'], mfgs[l][h].srcdata['ts'])
                 if l != self.gnn_param['layer'] - 1:
+                    # For every layer except the last
+                    # we take the output embeddings rst (from the current layer)
+                    # and assign them as input embeddings (srcdata['h'])
+                    # for the next layer’s block at the same history index.
                     mfgs[l + 1][h].srcdata['h'] = rst
                 else:
+                    # out[h]: [num_dst_nodes, dim_out]
                     out.append(rst)
         if self.sample_param['history'] == 1:
-            out = out[0]
+            out = out[0]# If there’s only one history slice, simplify out from [tensor] -> tensor.
         return self.edge_predictor(out, neg_samples=neg_samples)
 
     def get_embeddings(self, mfgs):

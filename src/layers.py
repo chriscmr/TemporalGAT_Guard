@@ -4,17 +4,17 @@ import math
 import numpy as np
 
 class TimeEncode(torch.nn.Module):
-    #dim is the dimension of time encoding
+    # dim is the dimension of time encoding
     def __init__(self, dim):
         super(TimeEncode, self).__init__()
         self.dim = dim
-        self.w = torch.nn.Linear(1, dim)#input(each scalar time) (batch_size, 1) and output (batch_size, dim); input.W^T + b;
-        #note that (1, dim) is in fact the shape of W^T :)
-        self.w.weight = torch.nn.Parameter((torch.from_numpy(1 / 10 ** np.linspace(0, 9, dim, dtype=np.float32))).reshape(dim, -1))#shape = (dim, 1); more generally (out_features×in_features)
+        self.w = torch.nn.Linear(1, dim)# input(each scalar time) (batch_size, 1) and output (batch_size, dim); input.W^T + b;
+        # note that (1, dim) is in fact the shape of W^T :)
+        self.w.weight = torch.nn.Parameter((torch.from_numpy(1 / 10 ** np.linspace(0, 9, dim, dtype=np.float32))).reshape(dim, -1))# shape = (dim, 1) internally; more generally (out_features×in_features)
         self.w.bias = torch.nn.Parameter(torch.zeros(dim))# shape = (dim,) but it acts like [batch, dim] after broadcasting.
 
     def forward(self, t):
-        output = torch.cos(self.w(t.reshape((-1, 1))))## Ensure input is of shape (batch_size, 1)
+        output = torch.cos(self.w(t.reshape((-1, 1))))# Ensure input is of shape (batch_size, 1)
         return output
 
 class EdgePredictor(torch.nn.Module):
@@ -28,18 +28,18 @@ class EdgePredictor(torch.nn.Module):
         self.out_fc = torch.nn.Linear(dim_in, 1)#maps the final combined edge representation to a scalar score before sigmoid
 
     def forward(self, h, neg_samples=1):
-        #h is a big tensor containing all node embeddings 
-        #for a batch of edges, h.shape = [total_rows, dim_in]
-        #each row = one node embedding vector (shape [dim_in])
-        #for each edge in the batch, you have:
-        #1 (src) + 1 (pos_dst) + neg_samples (neg_dst) = (neg_samples + 2) embeddings
-        #h.shape[0] = total number of node embeddings = num_edges × (2 + neg_samples)
-        num_edge = h.shape[0] // (neg_samples + 2)#how many original edges (source–positive_dst pairs) are in the batch
-        h_src = self.src_fc(h[:num_edge])#First segment = source nodes; sclicing row equivalent to h[0:num_edge, :] 
-                                        #shape [num_edges, dim_in]
+        # h is a big tensor containing all node embeddings 
+        # for a batch of edges, h.shape = [total_rows, dim_in]
+        # each row = one node embedding vector (shape [dim_in])
+        # for each edge in the batch, you have:
+        # 1 (src) + 1 (pos_dst) + neg_samples (neg_dst) = (neg_samples + 2) embeddings
+        # h.shape[0] = total number of node embeddings = num_edges × (2 + neg_samples)
+        num_edge = h.shape[0] // (neg_samples + 2)# how many original edges (source–positive_dst pairs) are in the batch
+        h_src = self.src_fc(h[:num_edge])# First segment = source nodes; sclicing row equivalent to h[0:num_edge, :] 
+                                        # shape [num_edges, dim_in]
         h_pos_dst = self.dst_fc(h[num_edge:2 * num_edge])
-        h_neg_dst = self.dst_fc(h[2 * num_edge:])#we only sample negative dst, good to know; source nodes remain the same
-                                                 #shape [num_edges * neg_samples, dim_in]
+        h_neg_dst = self.dst_fc(h[2 * num_edge:])# we only sample negative dst, good to know; source nodes remain the same
+                                                 # shape [num_edges * neg_samples, dim_in]
         h_pos_edge = torch.nn.functional.relu(h_src + h_pos_dst)#[num_edges, dim_in]
         h_neg_edge = torch.nn.functional.relu(h_src.tile(neg_samples, 1) + h_neg_dst)#.tile(neg_samples, 1) repeats existing embedding along the batch dimension to get shape [num_edges * neg_samples, dim_in]
         return self.out_fc(h_pos_edge), self.out_fc(h_neg_edge)#[num_edges, 1], [num_edges×neg_samples, 1]; xW+b
@@ -81,13 +81,13 @@ class TransfomerAttentionLayer(torch.nn.Module):
         self.layer_norm = torch.nn.LayerNorm(dim_out)# normalize the output embeddings
 
     def forward(self, b):
-        # b is a DGL block epresenting the sampled neighborhood for the current batch
-        # Remember source = message sender (neighbor), destination = receiver (center node) (yes confusing I know)
+        # b is a DGL block representing the sampled neighborhood for the current batch
+        # Remember source = message sender (neighbor), destination = receiver (center node)
         # b.srcdata['h'] source node embeddings (includes dst + sampled neighbors)
-        # holds the input node features for every source node before forward pass [num_src_nodes, dim_node_feat]
+        # holds also the input node features for every source node before forward pass [num_src_nodes, dim_node_feat]
         # b.dstdata['h'] destination node whose embeddings we want to compute
         # b.edata['f']	edge features
-        # b.edata['dt']	time differences between source & destination
+        # b.edata['dt']	time differences between source & destination shape is [num_edges]
         # b.edges()	returns (src_idx, dst_idx) pairs for all edges
         # b.num_edges()	number of temporal edges
         # b.num_dst_nodes()	number of destination nodes (to update)
@@ -118,20 +118,29 @@ class TransfomerAttentionLayer(torch.nn.Module):
                 V += self.w_v_e(b.edata['f'])
             if self.dim_time > 0:
                 Q += self.w_q_t(zero_time_feat)[b.edges()[1]]
-                K += self.w_k_t(time_feat)
-                V += self.w_v_t(time_feat)
-            Q = torch.reshape(Q, (Q.shape[0], self.num_head, -1))
-            K = torch.reshape(K, (K.shape[0], self.num_head, -1))
+                K += self.w_k_t(time_feat)# it’s the listener that aggregates past messages
+                V += self.w_v_t(time_feat)#reason why there are no expansion here like in Q
+            Q = torch.reshape(Q, (Q.shape[0], self.num_head, -1))#[num_edges, num_head, dim_per_head]
+            K = torch.reshape(K, (K.shape[0], self.num_head, -1))#dim_per_head = dim_out / num_head
             V = torch.reshape(V, (V.shape[0], self.num_head, -1))
             att = dgl.ops.edge_softmax(b, self.att_act(torch.sum(Q*K, dim=2)))
-            att = self.att_dropout(att)
+            # Q * K [num_edges, num_head, dim_per_head]
+            # after sum along dim=2, shape = [num_edges, num_head]
+            #DGL uses b to determine which edges belong to the same destination node,
+            #so that it can apply softmax normalization only within that node's incoming edges.
+            att = self.att_dropout(att)# randomly drops out some attention weights
             V = torch.reshape(V*att[:, :, None], (V.shape[0], -1))
-            b.edata['v'] = V
+            # att[:, :, None] expands attention shape to [num_edges, num_head, 1]
+            # after reshape back to [num_edges, dim_out]
+            b.edata['v'] = V #This attaches the weighted edge features to the graph as edge data
             b.update_all(dgl.function.copy_edge('v', 'm'), dgl.function.sum('m', 'h'))
-        else:
-            if self.dim_time == 0 and self.dim_node_feat == 0:
-                Q = torch.ones((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))
-                K = self.w_k(b.edata['f'])
+            # For each destination node 'v', copy the edge feature 'v' -> 'm'
+            # Then sum all 'm' from incoming edges into the destination's node data 'h'
+        else:#are no longer applying w_k or w_v to pure node-level
+            if self.dim_time == 0 and self.dim_node_feat == 0:#no node context
+                Q = torch.ones((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))#Q = dummy constant vector 
+                #(no node info, so just neutral query)
+                K = self.w_k(b.edata['f'])#linear projections of edge features only
                 V = self.w_v(b.edata['f'])
             elif self.dim_time == 0 and self.dim_edge_feat == 0:
                 Q = self.w_q(b.srcdata['h'][:b.num_dst_nodes()])[b.edges()[1]]
@@ -158,11 +167,17 @@ class TransfomerAttentionLayer(torch.nn.Module):
             V = torch.reshape(V, (V.shape[0], self.num_head, -1))
             att = dgl.ops.edge_softmax(b, self.att_act(torch.sum(Q*K, dim=2)))
             att = self.att_dropout(att)
-            V = torch.reshape(V*att[:, :, None], (V.shape[0], -1))
-            b.srcdata['v'] = torch.cat([torch.zeros((b.num_dst_nodes(), V.shape[1]), device=torch.device('cuda:0')), V], dim=0)
+            V = torch.reshape(V*att[:, :, None], (V.shape[0], -1)) # shape back to [num_edges, dim_out]
+            b.srcdata['v'] = torch.cat([torch.zeros((b.num_dst_nodes(), V.shape[1]), device=torch.device('cuda:0')), V], dim=0)   
+            # DGL expects 'v' to be defined for every node in b.srcdata
+            # i.e shape (num_src_nodes, dim_out) including both destinations and source-only nodes
+            #        
             b.update_all(dgl.function.copy_u('v', 'm'), dgl.function.sum('m', 'h'))
         if self.dim_node_feat != 0:
+            # b.dstdata['h'] now stores the aggregated message for each destination node
+            # b.srcdata['h'] original input embeddings
             rst = torch.cat([b.dstdata['h'], b.srcdata['h'][:b.num_dst_nodes()]], dim=1)
+            # shape (num_dst_nodes, dim_out)
         else:
             rst = b.dstdata['h']
         rst = self.w_out(rst)
