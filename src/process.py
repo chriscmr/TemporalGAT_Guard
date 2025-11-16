@@ -20,8 +20,7 @@ def preprocess(data_name):
         for idx, line in enumerate(f): #Splits each line into a list of strings
             e = line.strip().split(',')
             u = int(e[0]) # user ID
-            i = int(e[1]) # item ID       
-            
+            i = int(e[1]) # item ID     
             
             ts = float(e[2]) # timestamp
             label = int(e[3]) # label: 0/1 for negative/positive interaction

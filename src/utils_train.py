@@ -42,22 +42,30 @@ def create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, gn
     return model, sampler
 
 def train_model_link_pred(node_feats, edge_feats, g, df, model, sampler, sample_param, gnn_param, train_param, args, seed=0):
+    # node_feats node features tensor [N+1, d_n]
+    # edge_feats tensor [E+1, d_e]
+    # g dict the ext_full.pkl graph
+    # df pd.DataFrame edges.csv (src, dst, time, ext_roll, adv)
     combine_first = False
     if 'combine_neighs' in train_param and train_param['combine_neighs']:
         combine_first = True
+        # merge duplicate neighbors in the first layer
 
     if args.data != "UCI" and args.data != "BITCOIN":
         neg_link_sampler = NegLinkSamplerDST(df.dst.values)
     else:
+        # UCI and Bitcoin have special ID distributions
+        #  sample negatives from all nodes
         src_set = set(df.src.values)
         dst_set = set(df.dst.values)
         node_set = src_set.union(dst_set)
         neg_link_sampler = NegLinkSamplerDST(node_set)
 
     criterion = torch.nn.BCEWithLogitsLoss()
+    # input raw logits and applies sigmoid internally
     optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
 
-    train_df = df[df['ext_roll'] == 0]    
+    train_df = df[df['ext_roll'] == 0]  # training set  
 
     # best_val_auc = -1
     for e in range(1, train_param['epoch'] + 1):
@@ -70,24 +78,35 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, sampler, sample_
         model.train()
         if sampler is not None:
             sampler.reset()
+            # reset sampler memory at the beginning of each epoch
 
         for _, rows in train_df.groupby(train_df.index // train_param['batch_size']):
+            # row is a mini-batch of edges
+            # variable are rows.src, rows.dst, rows.time
+            # each has shape [batch_size]
             t_tot_s = time.time()
             root_nodes = np.concatenate([rows.src.values, rows.dst.values, neg_link_sampler.sample_v4(rows.dst.values, neg_samples=1)]).astype(np.int32)
+            # we want the embeddings of src, pos dst and neg dst
             ts = np.concatenate([rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
+            # same timestamps for src, pos dst and neg dst
             if sampler is not None:
                 if 'no_neg' in sample_param and sample_param['no_neg']:
-                    pos_root_end = root_nodes.shape[0] * 2 // 3
+                    # If negative sampling is disabled for the sampler, 
+                    # only sample src & pos dst
+                    pos_root_end = root_nodes.shape[0] * 2 // 3 # first two thirds are src and pos dst
                     sampler.sample(root_nodes[:pos_root_end], ts[:pos_root_end])
                 else:
                     sampler.sample(root_nodes, ts)
-                ret = sampler.get_ret()
+                    # Sample neighbors for all nodes (src, dst, neg)
+                ret = sampler.get_ret() # list of sampler results (one per layer × history)
                 time_sample += ret[0].sample_time()
             t_prep_s = time.time()
             if gnn_param['arch'] != 'identity':
+                # Convert sampler results to DGL blocks
                 mfgs = to_dgl_blocks(ret, sample_param['history'])
             else:
                 mfgs = node_to_dgl_blocks(root_nodes, ts)
+            # mfgs is a list of lists of DGL blocks
             mfgs = prepare_input(mfgs, node_feats, edge_feats, combine_first=combine_first)
             
             time_prep += time.time() - t_prep_s

@@ -127,7 +127,7 @@ def load_data(data, args):
     #     rand_edge_features = 128
     node_feats, edge_feats = load_feat(data, rand_edge_features, rand_node_features)
     # node_feats, edge_feats = None, None
-    g, df = load_graph(data)
+    g, df = load_graph(data) # graph dict and edge dataframe
     # if data == "UCI":
     #     edge_feats = torch.randn(len(df), 128)
     return node_feats, edge_feats, g, df
@@ -170,7 +170,7 @@ def load_graph(d):
     df = pd.read_csv('DATA/{}/edges.csv'.format(d))
     # g = np.load('DATA/{}/ext_full.npz'.format(d))
     with open(f'DATA/{d}/ext_full.pkl', 'rb') as f:
-        g = pickle.load(f)
+        g = pickle.load(f) # graph dict
     return g, df
 
 
@@ -246,35 +246,53 @@ def parse_config(model):
 
 
 def to_dgl_blocks(ret, hist, reverse=False, cuda=True):
+    # ret list of sampler results (r) from temporal neighbor sampler
+    # hist number of hisroty snapshots per layer
+    # reverse whether to reverse the direction of edges
+    # returns list of lists: [[block_l0h0, block_l0h1], [block_l1h0, block_l1h1], …]
     mfgs = list()
     for r in ret:
+        # r represents one temporal neighborhood snapshot
         if not reverse:
             b = dgl.create_block((r.col(), r.row()), num_src_nodes=r.dim_in(), num_dst_nodes=r.dim_out())
+            # r.row() array of source node indices (senders)
+            # r.col() array of destination node indices (receivers)
+            # r.nodes() array of node IDs involved in this sample
+            # r.dts() edge time differences
             b.srcdata['ID'] = torch.from_numpy(r.nodes())
             b.edata['dt'] = torch.from_numpy(r.dts())[b.num_dst_nodes():]
+            # sampler stores destination Δt first, then source Δt; 
+            # this discards the destination part.
             b.srcdata['ts'] = torch.from_numpy(r.ts())
         else:
             b = dgl.create_block((r.row(), r.col()), num_src_nodes=r.dim_out(), num_dst_nodes=r.dim_in())
             b.dstdata['ID'] = torch.from_numpy(r.nodes())
             b.edata['dt'] = torch.from_numpy(r.dts())[b.num_src_nodes():]
             b.dstdata['ts'] = torch.from_numpy(r.ts())
-        b.edata['ID'] = torch.from_numpy(r.eid())
+        b.edata['ID'] = torch.from_numpy(r.eid()) # global edge IDs
         if cuda:
             mfgs.append(b.to('cuda:0'))
         else:
             mfgs.append(b)
+    # group by history snapshots
     mfgs = list(map(list, zip(*[iter(mfgs)] * hist)))
+    # Example if hist = 2 and we had [b0, b1, b2, b3] then:
+    # mfgs = [[b0, b1], [b2, b3]] one inner list per GNN layer
     mfgs.reverse()
+    # to make layer 0 be first
     return mfgs
 
 
 def node_to_dgl_blocks(root_nodes, ts, cuda=True):
     mfgs = list()
     b = dgl.create_block(([],[]), num_src_nodes=root_nodes.shape[0], num_dst_nodes=root_nodes.shape[0])
+    # Creates an empty block (no edges)
+    # Both src and dst are the same set of root nodes
     b.srcdata['ID'] = torch.from_numpy(root_nodes)
     b.srcdata['ts'] = torch.from_numpy(ts)
     if cuda:
         mfgs.insert(0, [b.to('cuda:0')])
+        # output [[root_block]]
     else:
         mfgs.insert(0, [b])
     return mfgs
@@ -288,6 +306,16 @@ def mfgs_to_cuda(mfgs):
 
 
 def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=False, nfeat_buffs=None, efeat_buffs=None, nids=None, eids=None):
+    # mfgs list of DGL blocks ([[l0h0, l0h1], [l1h0, l1h1], ...])
+    # node_feats tensor [num_nodes+1, dim_node]
+    # edge_feats tensor [num_edges+1, dim_edge]
+    # combine_first whether to combine duplicate nodes in the first layer's blocks
+    # pinned whether node/edge features are stored in pinned memory buffers
+    # nfeat_buffs list of pinned memory buffers for node features
+    # efeat_buffs list of pinned memory buffers for edge features
+    # nids, eids precomputed index tensors for faster feature lookup 
+    # attaches the correct node and edge feature vectors to 
+    # each sampled DGL block before model forward pass.
     if combine_first:
         for i in range(len(mfgs[0])):
             if mfgs[0][i].num_src_nodes() > mfgs[0][i].num_dst_nodes():
@@ -297,7 +325,7 @@ def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=Fals
                 nts = torch.stack([ts, nid], dim=1)
                 unts, idx = torch.unique(nts, dim=0, return_inverse=True)
                 uts = unts[:, 0]
-                unid = unts[:, 1]
+                unid = unts[:, 1] 
                 # import pdb; pdb.set_trace()
                 b = dgl.create_block((idx + num_dst, mfgs[0][i].edges()[1]), num_src_nodes=unts.shape[0] + num_dst, num_dst_nodes=num_dst, device=torch.device('cuda:0'))
                 b.srcdata['ts'] = torch.cat([mfgs[0][i].srcdata['ts'][:num_dst], uts], dim=0)
