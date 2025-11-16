@@ -12,13 +12,13 @@ def preprocess(data_name):
     # features → edge-specific features
     u_list, i_list, ts_list, label_list = [], [], [], []
     feat_l = []
-    idx_list = []
+    idx_list = [] 
     
     with open(data_name) as f:
         s = next(f)
         print(s) # Skips the first line (header)
-        for idx, line in enumerate(f): #Splits each line into a list of strings
-            e = line.strip().split(',')
+        for idx, line in enumerate(f): 
+            e = line.strip().split(',') #Splits each line into a list of strings
             u = int(e[0]) # user ID
             i = int(e[1]) # item ID     
             
@@ -45,7 +45,7 @@ def preprocess(data_name):
 
 def reindex(df):
     # no missing integers
-    assert(df.u.max() - df.u.min() + 1 == len(df.u.unique()))
+    assert(df.u.max() - df.u.min() + 1 == len(df.u.unique())) # n-p+1 :) number of element between max and min
     assert(df.i.max() - df.i.min() + 1 == len(df.i.unique()))
     
     # If users from 0..U-1
@@ -103,8 +103,8 @@ def convert_tgat_to_tspear(dataset_name):
     node_feat_npy = f'tgat_data/original/ml_{dataset_name}_node.npy' # node features
 
     df      = pd.read_csv(tgat_csv)   # columns: u,i,ts,label,idx
-    edge_f  = np.load(edge_feat_npy)     # shape = [#edges+1, feat_dim]
-    node_f  = np.load(node_feat_npy)     # shape = [#nodes+1, feat_dim]
+    edge_f  = np.load(edge_feat_npy)     # shape = [edges+1, feat_dim]
+    node_f  = np.load(node_feat_npy)     # shape = [nodes+1, feat_dim]
 
     out_dir = f'DATA/{dataset_name}'
     os.makedirs(out_dir, exist_ok=True)
@@ -112,9 +112,9 @@ def convert_tgat_to_tspear(dataset_name):
     edges_out = df[['u','i','ts']].copy()
     edges_out.columns = ['src','dst','time']# rename columns
     val_time, test_time = edges_out.time.quantile([0.70,0.85]).values
-    # First 70 % → training
-    # Next 15 % → validation
-    # Last 15 % → test
+    # First 70 % -> training
+    # Next 15 % -> validation
+    # Last 15 % -> test
 
     # add rolling columns for TSPEAR
     edges_out['int_roll'] = 0        # internal CV fold 0 = none
@@ -135,7 +135,7 @@ def convert_tgat_to_tspear(dataset_name):
     raw_adj = [[] for _ in range(N)] # adjacency list
     # each element will hold (neighbor, time, edge_id)
     for _, row in df.iterrows():
-        # For each edge (u,v), add v → u and u → v entries.
+        # For each edge (u,v), add v -> u and u -> v entries.
         u, v, t, idx = int(row.u), int(row.i), float(row.ts), int(row.idx)
         raw_adj[u].append((v, t, idx))
         raw_adj[v].append((u, t, idx))
@@ -156,7 +156,7 @@ def convert_tgat_to_tspear(dataset_name):
     # Separate into lists
     ext_full_indices = [[] for _ in range(N)] # neighbor node IDs
     ext_full_ts      = [[] for _ in range(N)]
-    ext_full_eid     = [[] for _ in range(N)]# edge IDs
+    ext_full_eid     = [[] for _ in range(N)] # edge IDs
     for u in range(N):
         for v, t, eid in raw_adj[u]:
             ext_full_indices[u].append(v)
@@ -167,18 +167,28 @@ def convert_tgat_to_tspear(dataset_name):
     # | 1    | [2, 3]       | [1.0, 2.0] | [0, 1]   |
     # | 2    | [1]          | [1.0]      | [0]      |
     # | 3    | [1]          | [2.0]      | [1]      |
-    # ext_full_indices[1] = [2, 3], for node 1
-    # ext_full_ts[1]      = [1.0, 2.0]
-    # ext_full_eid[1]     = [0, 1]
+    # ext_full_indices[1] = [2, 3], for node 1 (index 1)
+    # ext_full_ts[1]      = [1.0, 2.0], for node 1
+    # ext_full_eid[1]     = [0, 1], for node 1
 
     # build CSR arrays
     # instead of a list of lists, we compress everything 
     # into flat arrays with pointers that tell us where each 
-    # node’s neighbor list starts and ends
+    # node's neighbor list starts and ends
 
     indptr = np.zeros(N+1, dtype=np.int64)
+    # needs one extra slot so each node i uses 
+    # indptr[i]:indptr[i+1] to index its neighbors
     for i in range(N):
         indptr[i+1] = indptr[i] + len(ext_full_indices[i])
+    # example inputs
+    # ext_full_indices = [[], [2,3], [1], [1]], N = 4(nodes 0..3)
+    # indptr = np.zeros(4+1, dtype=np.int64) , [0,0,0,0,0]
+    # loop effect:
+    # i=0 -> indptr[1] = 0 + len([]) = 0  -> [0,0,0,0,0]
+    # i=1 -> indptr[2] = 0 + len([2,3]) = 2 -> [0,0,2,0,0]
+    # i=2 -> indptr[3] = 2 + len([1]) = 3  -> [0,0,2,3,0]
+    # i=3 -> indptr[4] = 3 + len([1]) = 4  -> [0,0,2,3,4]
     indices = np.concatenate(ext_full_indices).astype(np.int64)# [num_edges*2]
     ts      = np.concatenate(ext_full_ts).astype(np.float32) # [num_edges*2]
     eid     = np.concatenate(ext_full_eid).astype(np.int64) # [num_edges*2]
@@ -213,11 +223,10 @@ def convert_tgat_to_tspear(dataset_name):
     }
 
     with open(os.path.join(out_dir,'ext_full.pkl'),'wb') as f:
-        pickle.dump(g, f)
+        pickle.dump(g, f) # save graph structure
 
     ef = torch.from_numpy(edge_f).float()
     torch.save(ef, os.path.join(out_dir,'edge_features.pt'))
-
     
     nf = torch.from_numpy(node_f).float()
     torch.save(nf, os.path.join(out_dir,'node_features.pt'))
