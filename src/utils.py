@@ -247,7 +247,7 @@ def parse_config(model):
 
 def to_dgl_blocks(ret, hist, reverse=False, cuda=True):
     # ret list of sampler results (r) from temporal neighbor sampler
-    # hist number of hisroty snapshots per layer
+    # hist number of history snapshots per layer
     # reverse whether to reverse the direction of edges
     # returns list of lists: [[block_l0h0, block_l0h1], [block_l1h0, block_l1h1], …]
     mfgs = list()
@@ -255,14 +255,15 @@ def to_dgl_blocks(ret, hist, reverse=False, cuda=True):
         # r represents one temporal neighborhood snapshot
         if not reverse:
             b = dgl.create_block((r.col(), r.row()), num_src_nodes=r.dim_in(), num_dst_nodes=r.dim_out())
-            # r.row() array of source node indices (senders)
-            # r.col() array of destination node indices (receivers)
+            # r.row() array of dst node indices
+            # r.col() array of src node indices
             # r.nodes() array of node IDs involved in this sample
             # r.dts() edge time differences
             b.srcdata['ID'] = torch.from_numpy(r.nodes())
             b.edata['dt'] = torch.from_numpy(r.dts())[b.num_dst_nodes():]
-            # sampler stores destination Δt first, then source Δt; 
-            # this discards the destination part.
+            # r.dts store difference between src and dst timestamps and other way round
+            # basically delta_t is stored per nodes
+            # but we only need it for source nodes
             b.srcdata['ts'] = torch.from_numpy(r.ts())
         else:
             b = dgl.create_block((r.row(), r.col()), num_src_nodes=r.dim_out(), num_dst_nodes=r.dim_in())
@@ -279,7 +280,7 @@ def to_dgl_blocks(ret, hist, reverse=False, cuda=True):
     # Example if hist = 2 and we had [b0, b1, b2, b3] then:
     # mfgs = [[b0, b1], [b2, b3]] one inner list per GNN layer
     mfgs.reverse()
-    # to make layer 0 be first
+    # to make layer 1 be first, VERY IMPORTANT!!!!
     return mfgs
 
 
@@ -292,6 +293,7 @@ def node_to_dgl_blocks(root_nodes, ts, cuda=True):
     b.srcdata['ts'] = torch.from_numpy(ts)
     if cuda:
         mfgs.insert(0, [b.to('cuda:0')])
+        # insert at the position 0
         # output [[root_block]]
     else:
         mfgs.insert(0, [b])
@@ -348,7 +350,9 @@ def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=Fals
                 i += 1
             else:
                 srch = node_feats[b.srcdata['ID'].long().cpu()].float()
+                # shape is [num_nodes, dim_node]
                 b.srcdata['h'] = srch.cuda()
+                # note: dst nodes are first in b.srcdata['h']
     i = 0
     if edge_feats is not None:
         for mfg in mfgs:

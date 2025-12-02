@@ -97,8 +97,10 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, sampler, sample_
                     sampler.sample(root_nodes[:pos_root_end], ts[:pos_root_end])
                 else:
                     sampler.sample(root_nodes, ts)
-                    # Sample neighbors for all nodes (src, dst, neg)
+                    # Sample temporal neighbors for all nodes (src, dst, neg)
                 ret = sampler.get_ret() # list of sampler results (one per layer × history)
+                # ret = [r0, r1] if 2 layer and one history
+                # note that in r1 we sampled neighbors for source node from r0
                 time_sample += ret[0].sample_time()
             t_prep_s = time.time()
             if gnn_param['arch'] != 'identity':
