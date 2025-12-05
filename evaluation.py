@@ -16,7 +16,9 @@ from src.utils import (
 )
 from src.utils_train import (
     create_model_mailbox_sampler,
-    link_pred_evaluation
+    link_pred_evaluation,
+    robust_link_pred_evaluation_v2,
+    remove_noise,
 )
 
 EXP_ID = 'AAAI'
@@ -37,12 +39,13 @@ def evaluation(args):
     
         ## Model train
         sample_param, memory_param, gnn_param, train_param = parse_config(args.model)
-        model, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, gnn_param, train_param)
+        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param)
 
         best_epoch = 0
         best_ap = 0
         best_auc = 0
         best_hit = 0
+        best_mailbox = None
         best_g = None
         best_df = None
         patience = 0
@@ -59,11 +62,24 @@ def evaluation(args):
 
             if sampler is not None:
                 sampler.reset()
+            if mailbox is not None:
+                mailbox.reset()
+                model.memory_updater.last_updated_nid = None
+                model.memory_updater.last_updated_ts = None
+                model.memory_updater.last_updated_memory = None
 
-            if args.robust == "none" or args.robust == "svd":                
-                val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, sampler, sample_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='val', evaluation=True, seed=seed)
+            if args.robust == "none" or args.robust == "svd":
+                if mailbox is not None:
+                    link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='train', seed=seed)
+                val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='val', evaluation=True, seed=seed)
 
-            
+            elif args.robust == "proposed" or args.robust == "cosine":
+                orig_g = copy.deepcopy(g)
+                orig_df = df.copy()
+                if mailbox is not None:
+                    _, _, _, train_g, train_df = robust_link_pred_evaluation_v2(node_feats, edge_feats, orig_g, orig_df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='train', seed=seed, threshold=threshold)
+                val_ap, val_auc, val_hit, val_g, val_df = robust_link_pred_evaluation_v2(node_feats, edge_feats, train_g, train_df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='val', evaluation=True, seed=seed, threshold=threshold)
+
             t_eval_e = time.time() - t_eval_s
 
             if val_auc >= best_auc:
@@ -71,6 +87,11 @@ def evaluation(args):
                 best_ap = val_ap
                 best_auc = val_auc
                 best_hit = val_hit
+                if mailbox is not None:
+                    best_mailbox = copy.deepcopy(mailbox)
+                if args.robust == "proposed" or args.robust == "cosine":
+                    best_g = copy.deepcopy(val_g)
+                    best_df = val_df.copy()
                 torch.save(model.state_dict(), best_model_path)
                 patience = 0
             else:
@@ -85,8 +106,10 @@ def evaluation(args):
         model.load_state_dict(torch.load(best_model_path))
         model.eval()
         if args.robust == "none" or args.robust == "svd":
-            test_ap, test_auc, test_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, sampler, sample_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='test', evaluation=True, seed=seed)
-        
+            test_ap, test_auc, test_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, best_mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='test', evaluation=True, seed=seed)
+        elif args.robust == "proposed" or args.robust == "cosine":
+            test_ap, test_auc, test_hit, _, _ = robust_link_pred_evaluation_v2(node_feats, edge_feats, best_g, best_df, model, best_mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='test', evaluation=True, seed=seed, threshold=threshold)
+
         val_aps.append(best_ap)
         val_aucs.append(best_auc)
         val_hits.append(best_hit)

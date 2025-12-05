@@ -17,10 +17,11 @@ from src.utils import (
     get_attacked_data_dir,
     load_attacked_data
 )
-
+from src.attacker import TemporalAttack
 from src.utils_train import (
     create_model_mailbox_sampler,
-    train_model_link_pred
+    train_model_link_pred,
+    robust_train_model_link_pred_v2,
 )
 
 EXP_ID = 'AAAI'
@@ -41,10 +42,14 @@ def train_main(args):
         
         ## Model train
         sample_param, memory_param, gnn_param, train_param = parse_config(args.model)
-        model, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, gnn_param, train_param)
+        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param)
 
         if args.robust == "none" or args.robust == "svd":
-            val_ap, val_auc, val_hit, test_ap, test_auc, test_hit = train_model_link_pred(node_feats, edge_feats, g, df, model, sampler, sample_param, gnn_param, train_param, args, seed=seed)        
+            val_ap, val_auc, val_hit, test_ap, test_auc, test_hit = train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, seed=seed)
+        elif args.robust == "cosine":
+            val_ap, val_auc, val_hit, test_ap, test_auc, test_hit = robust_train_model_link_pred_v2(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, seed=seed)
+        elif args.robust == "proposed":
+            val_ap, val_auc, val_hit, test_ap, test_auc, test_hit = robust_train_model_link_pred_v2(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, seed=seed)
 
         val_aps.append(val_ap)
         val_aucs.append(val_auc)
@@ -69,7 +74,50 @@ def train_main(args):
     args.logger.info(f'[Final] model: {args.model}, attack: {args.attack} ({args.ptb_rate:.2f}), seeds: {args.seeds}, val_auc: {val_auc_mean:.4f}+-{val_auc_std:.4f}, val_hit: {val_hit_mean:.4f}+-{val_hit_std:.4f}, test_ap: {test_ap_mean:.4f}+-{test_ap_std:.4f}, test_auc: {test_auc_mean:.4f}+-{test_auc_std:.4f}, test_hit: {test_hit_mean:.4f}+-{test_hit_std:.4f}, neg_samples: {args.eval_neg_samples}')
     
 
+
+def attack_and_save(args):
+    if args.attack == "none":
+        return
+
+    data_dir = get_attacked_data_dir(args)
+    Path(data_dir).mkdir(parents=True, exist_ok=True)
+    node_feats, edge_feats, g, df = load_data(args.data, args)
+    seed = 0
+    set_random_seed(seed)
+
+    if os.path.exists(f'{data_dir}/ext_full.pkl') and os.path.exists(f'{data_dir}/edges.csv'):
+        print(f'[Complete] Already exists attacked dataset at {data_dir}, seed={seed}.\n')
+        return
+
+    ## Poisoning attack
+    attacker = TemporalAttack(args)
+    ptb_node_feats, ptb_edge_feats, ptb_g, ptb_df = attacker.attack(
+        orig_node_feats=node_feats, 
+        orig_edge_feats=edge_feats, 
+        orig_g=g, 
+        orig_df=df, 
+        ptb_rate=args.ptb_rate, 
+        args=args,
+        seed=seed,
+    )
+    ## save attacked dataset
+    if args.data == 'WIKI':
+        if ptb_node_feats is not None:
+            torch.save(ptb_node_feats, f'{data_dir}/node_features.pt')
+        if ptb_edge_feats is not None:
+            torch.save(ptb_edge_feats, f'{data_dir}/edge_features.pt')
+
+    with open(f'{data_dir}/ext_full.pkl', 'wb') as f:
+        pickle.dump(ptb_g, f)
+    ptb_df.to_csv(f'{data_dir}/edges.csv', index=False)
+    print(f'[Complete] Save attacked dataset at {data_dir}, seed={seed}.\n')
+
+
 if __name__ == "__main__":
     args = parse_argument()
-    train_main(args)
+    if args.attack != "none":
+        attack_and_save(args)
+        train_main(args)
+    else:
+        train_main(args)
 
