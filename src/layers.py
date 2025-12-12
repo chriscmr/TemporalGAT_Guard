@@ -47,7 +47,7 @@ class EdgePredictor(torch.nn.Module):
 
 class TransfomerAttentionLayer(torch.nn.Module):
 
-    def __init__(self, dim_node_feat, dim_edge_feat, dim_time, num_head, dropout, att_dropout, dim_out, combined=False):
+    def __init__(self, dim_node_feat, dim_edge_feat, dim_time, num_head, dropout, att_dropout, dim_out, combined=False, is_hetero=False, num_relations=1):
         super(TransfomerAttentionLayer, self).__init__()
         self.num_head = num_head
         self.dim_node_feat = dim_node_feat# dimension of node features
@@ -58,8 +58,15 @@ class TransfomerAttentionLayer(torch.nn.Module):
         self.att_dropout = torch.nn.Dropout(att_dropout)#on the attention coefficients
         self.att_act = torch.nn.LeakyReLU(0.2)
         self.combined = combined# whether to learn separate Q,K,V projections per feature type (node/edge/time) or combine all into one vector first
+        self.is_hetero = is_hetero
+        self.num_relations = num_relations
+
         if dim_time > 0:
             self.time_enc = TimeEncode(dim_time)
+
+        if is_hetero:
+            self.rel_emb = torch.nn.Embedding(num_relations + 1, dim_out)# +1 for padding index
+
         if combined:#Each feature type (node, edge, time) gets its own projection.
             if dim_node_feat > 0:# Node parts
                 self.w_q_n = torch.nn.Linear(dim_node_feat, dim_out)
@@ -72,11 +79,16 @@ class TransfomerAttentionLayer(torch.nn.Module):
                 self.w_q_t = torch.nn.Linear(dim_time, dim_out)
                 self.w_k_t = torch.nn.Linear(dim_time, dim_out)
                 self.w_v_t = torch.nn.Linear(dim_time, dim_out)
+            if is_hetero:
+                self.w_k_r = torch.nn.Linear(dim_out, dim_out)
+                self.w_v_r = torch.nn.Linear(dim_out, dim_out)
         else:
             if dim_node_feat + dim_time > 0:
                 self.w_q = torch.nn.Linear(dim_node_feat + dim_time, dim_out)
-            self.w_k = torch.nn.Linear(dim_node_feat + dim_edge_feat + dim_time, dim_out)
-            self.w_v = torch.nn.Linear(dim_node_feat + dim_edge_feat + dim_time, dim_out)
+            eff_edge_dim = dim_edge_feat + (dim_out if is_hetero else 0)
+            self.w_k = torch.nn.Linear(dim_node_feat + eff_edge_dim + dim_time, dim_out)
+            self.w_v = torch.nn.Linear(dim_node_feat + eff_edge_dim + dim_time, dim_out)
+
         self.w_out = torch.nn.Linear(dim_node_feat + dim_out, dim_out)#you concatenate the original node features (residual connection)
         self.layer_norm = torch.nn.LayerNorm(dim_out)# normalize the output embeddings
 
@@ -91,9 +103,14 @@ class TransfomerAttentionLayer(torch.nn.Module):
         # b.edges()	returns (src_idx, dst_idx) pairs for all edges
         # b.num_edges()	number of temporal edges
         # b.num_dst_nodes()	number of destination nodes (to update)
-        assert(self.dim_time + self.dim_node_feat + self.dim_edge_feat > 0)
+        assert(self.dim_time + self.dim_node_feat + self.dim_edge_feat > 0 or self.is_hetero)
+        # device = b.srcdata['h'].device might be useful
         if b.num_edges() == 0:
             return torch.zeros((b.num_dst_nodes(), self.dim_out), device=torch.device('cuda:0'))
+        if self.is_hetero:
+            rel_vec = self.rel_emb(b.edata['rel_type'].long()) # [num_edges, dim_out]
+        else:
+            rel_vec = None
         if self.dim_time > 0:
             time_feat = self.time_enc(b.edata['dt'])#edge gets a temporal encoding of its time difference Δt
             zero_time_feat = self.time_enc(torch.zeros(b.num_dst_nodes(), dtype=torch.float32, device=torch.device('cuda:0')))
@@ -120,6 +137,9 @@ class TransfomerAttentionLayer(torch.nn.Module):
                 Q += self.w_q_t(zero_time_feat)[b.edges()[1]]
                 K += self.w_k_t(time_feat)# it’s the listener that aggregates past messages
                 V += self.w_v_t(time_feat)#reason why there are no expansion here like in Q
+            if self.is_hetero:
+                K += self.w_k_r(rel_vec)
+                V += self.w_v_r(rel_vec)
             Q = torch.reshape(Q, (Q.shape[0], self.num_head, -1))#[num_edges, num_head, dim_per_head]
             K = torch.reshape(K, (K.shape[0], self.num_head, -1))#dim_per_head = dim_out / num_head
             V = torch.reshape(V, (V.shape[0], self.num_head, -1))
@@ -137,31 +157,63 @@ class TransfomerAttentionLayer(torch.nn.Module):
             # For each destination node 'v', copy the edge feature 'v' -> 'm'
             # Then sum all 'm' from incoming edges into the destination's node data 'h'
         else:#are no longer applying w_k or w_v to pure node-level
-            if self.dim_time == 0 and self.dim_node_feat == 0:#no node context
-                Q = torch.ones((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))#Q = dummy constant vector 
-                #(no node info, so just neutral query)
-                K = self.w_k(b.edata['f'])#linear projections of edge features only
-                V = self.w_v(b.edata['f'])
-            elif self.dim_time == 0 and self.dim_edge_feat == 0:
-                Q = self.w_q(b.srcdata['h'][:b.num_dst_nodes()])[b.edges()[1]]
-                K = self.w_k(b.srcdata['h'][b.num_dst_nodes():])
-                V = self.w_v(b.srcdata['h'][b.num_dst_nodes():])
-            elif self.dim_time == 0:
-                Q = self.w_q(b.srcdata['h'][:b.num_dst_nodes()])[b.edges()[1]]
-                K = self.w_k(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f']], dim=1))
-                V = self.w_v(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f']], dim=1))
-            elif self.dim_node_feat == 0:
-                Q = self.w_q(zero_time_feat)[b.edges()[1]]
-                K = self.w_k(torch.cat([b.edata['f'], time_feat], dim=1))
-                V = self.w_v(torch.cat([b.edata['f'], time_feat], dim=1))
-            elif self.dim_edge_feat == 0:
-                Q = self.w_q(torch.cat([b.srcdata['h'][:b.num_dst_nodes()], zero_time_feat], dim=1))[b.edges()[1]]
-                K = self.w_k(torch.cat([b.srcdata['h'][b.num_dst_nodes():], time_feat], dim=1))
-                V = self.w_v(torch.cat([b.srcdata['h'][b.num_dst_nodes():], time_feat], dim=1))
+            if self.is_hetero:
+                # edge_input = [edge_feat, rel_vec] or  [rel_vec]
+                if self.dim_edge_feat > 0:
+                    if 'f' in b.edata and b.edata['f'].numel() > 0:
+                        edge_input = torch.cat([b.edata['f'], rel_vec], dim=1)
+                    else:
+                        edge_input = rel_vec
+                else:
+                    edge_input = rel_vec
+
+                # Q from dest nodes (+ time if available)
+                if self.dim_time > 0:
+                    Q_in = torch.cat(
+                        [b.srcdata['h'][:b.num_dst_nodes()], zero_time_feat], dim=1
+                    )
+                else:
+                    Q_in = b.srcdata['h'][:b.num_dst_nodes()]
+
+                Q = self.w_q(Q_in)[b.edges()[1]]
+
+                # K,V from source-only nodes + edge_input (+ time)
+                if self.dim_time > 0:
+                    KV_in = torch.cat(
+                        [b.srcdata['h'][b.num_dst_nodes():], edge_input, time_feat],
+                        dim=1 )
+                else:
+                    KV_in = torch.cat(
+                        [b.srcdata['h'][b.num_dst_nodes():], edge_input],
+                        dim=1)
+                K = self.w_k(KV_in)
+                V = self.w_v(KV_in)
             else:
-                Q = self.w_q(torch.cat([b.srcdata['h'][:b.num_dst_nodes()], zero_time_feat], dim=1))[b.edges()[1]]
-                K = self.w_k(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f'], time_feat], dim=1))
-                V = self.w_v(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f'], time_feat], dim=1))
+                if self.dim_time == 0 and self.dim_node_feat == 0:#no node context
+                    Q = torch.ones((b.num_edges(), self.dim_out), device=torch.device('cuda:0'))#Q = dummy constant vector 
+                    #(no node info, so just neutral query)
+                    K = self.w_k(b.edata['f'])#linear projections of edge features only
+                    V = self.w_v(b.edata['f'])
+                elif self.dim_time == 0 and self.dim_edge_feat == 0:
+                    Q = self.w_q(b.srcdata['h'][:b.num_dst_nodes()])[b.edges()[1]]
+                    K = self.w_k(b.srcdata['h'][b.num_dst_nodes():])
+                    V = self.w_v(b.srcdata['h'][b.num_dst_nodes():])
+                elif self.dim_time == 0:
+                    Q = self.w_q(b.srcdata['h'][:b.num_dst_nodes()])[b.edges()[1]]
+                    K = self.w_k(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f']], dim=1))
+                    V = self.w_v(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f']], dim=1))
+                elif self.dim_node_feat == 0:
+                    Q = self.w_q(zero_time_feat)[b.edges()[1]]
+                    K = self.w_k(torch.cat([b.edata['f'], time_feat], dim=1))
+                    V = self.w_v(torch.cat([b.edata['f'], time_feat], dim=1))
+                elif self.dim_edge_feat == 0:
+                    Q = self.w_q(torch.cat([b.srcdata['h'][:b.num_dst_nodes()], zero_time_feat], dim=1))[b.edges()[1]]
+                    K = self.w_k(torch.cat([b.srcdata['h'][b.num_dst_nodes():], time_feat], dim=1))
+                    V = self.w_v(torch.cat([b.srcdata['h'][b.num_dst_nodes():], time_feat], dim=1))
+                else:
+                    Q = self.w_q(torch.cat([b.srcdata['h'][:b.num_dst_nodes()], zero_time_feat], dim=1))[b.edges()[1]]
+                    K = self.w_k(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f'], time_feat], dim=1))
+                    V = self.w_v(torch.cat([b.srcdata['h'][b.num_dst_nodes():], b.edata['f'], time_feat], dim=1))
             Q = torch.reshape(Q, (Q.shape[0], self.num_head, -1))
             K = torch.reshape(K, (K.shape[0], self.num_head, -1))
             V = torch.reshape(V, (V.shape[0], self.num_head, -1))

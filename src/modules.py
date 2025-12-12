@@ -12,6 +12,7 @@ class GeneralModel(torch.nn.Module):
         self.dim_node_input = dim_node
         self.dim_edge = dim_edge
         self.sample_param = sample_param
+        self.memory_param = memory_param
         if not 'dim_out' in gnn_param:
             gnn_param['dim_out'] = memory_param['dim_out']
         self.gnn_param = gnn_param

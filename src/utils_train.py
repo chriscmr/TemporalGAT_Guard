@@ -13,6 +13,7 @@ from sklearn.metrics import average_precision_score, roc_auc_score
 from deeprobust.graph.defense.pgd import PGD, prox_operators
 
 from .modules import GeneralModel, EstimateAdj
+from .memorys import MailBox, EmbeddingBox
 from .sampler import ParallelSampler, NegLinkSampler, NegLinkSamplerDST
 from .utils import (
     to_dgl_blocks,
@@ -28,7 +29,7 @@ def create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, me
     if 'combine_neighs' in train_param and train_param['combine_neighs']:
         combine_first = True
 
-    model = GeneralModel(gnn_dim_node, gnn_dim_edge, sample_param, gnn_param, train_param, combined=combine_first).cuda()
+    model = GeneralModel(gnn_dim_node, gnn_dim_edge, sample_param, memory_param, gnn_param, train_param, combined=combine_first).cuda()
     mailbox = MailBox(memory_param, g['indptr'].shape[0] - 1, gnn_dim_edge) if memory_param['type'] != 'none' else None
     if 'all_on_gpu' in train_param and train_param['all_on_gpu']:
         if node_feats is not None:
@@ -151,7 +152,7 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler
         torch.save(model.state_dict(), model_path)
 
         t_val_s = time.time()
-        val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, sampler, sample_param, gnn_param, train_param, args, negs=1, mode='val', evaluation=False)        
+        val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='val', evaluation=False)        
         time_val = time.time() - t_val_s
         # args.logger.debug(f'Epoch: {e}, train_loss: {total_loss:.1f}, total_time: {(time_tot + time_val):.2f}s (sample: {time_sample:.2f}s, prep: {time_prep:.2f}s, val: {time_val:.2f}s)')
         args.logger.debug(f'Epoch: {e}, train_loss: {total_loss:.1f}, val_ap: {val_ap:.4f}, val_auc: {val_auc:.4f}, total_time: {(time_tot + time_val):.2f}s (sample: {time_sample:.2f}s, prep: {time_prep:.2f}s, val: {time_val:.2f}s)')

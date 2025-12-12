@@ -26,8 +26,8 @@ def set_random_seed(seed):
 def parse_argument():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, nargs='+', default=[0])
-    parser.add_argument("--data", type=str, default="WIKI/ATTACKED/proposed_TGN_0.3_True_0")
-    parser.add_argument("--model", type=str, default="TGAT")
+    parser.add_argument("--data", type=str, default="WIKI")#proposed_TGN_0.3_True_0
+    parser.add_argument("--model", type=str, default="TGN")
     parser.add_argument("--gpu", type=int, default=0)
 
     parser.add_argument("--attack", type=str, default="none", choices=["none", "random", "proposed", "degree", "pagerank", "preference", "jaccard"])#none if training

@@ -5,12 +5,14 @@ import pickle
 import torch
 import os
 
-def preprocess(data_name):
-    # each line of the dataset looks like this
-    # u_id, i_id, timestamp, label, f1, f2, f3, ..., f_d
+def preprocess(data_name, is_hetero=False, has_edge_feat=True):
+    # Hetero format (THGL-Software):
+    # u_id, i_id, ts, label, idx, rel_type, f1, f2, ...
+    # Homo format:
+    # u_id, i_id, ts, label, f1, f2, ...
     # user(source node), item(destination node), time when the interaction occurred
     # features → edge-specific features
-    u_list, i_list, ts_list, label_list = [], [], [], []
+    u_list, i_list, ts_list, label_list, rel_type_list = [], [], [], [], []
     feat_l = []
     idx_list = [] 
     
@@ -19,66 +21,92 @@ def preprocess(data_name):
         print(s) # Skips the first line (header)
         for idx, line in enumerate(f): 
             e = line.strip().split(',') #Splits each line into a list of strings
-            u = int(e[0]) # user ID
-            i = int(e[1]) # item ID     
+            u = int(float(e[0])) # user ID
+            i = int(float(e[1])) # item ID     
             
             ts = float(e[2]) # timestamp
-            label = int(e[3]) # label: 0/1 for negative/positive interaction
-            
-            feat = np.array([float(x) for x in e[4:]]) # edge features
+            label = int(float(e[3]))             
+            if is_hetero:
+                rel_type = int(float(e[5]))
+                rel_type_list.append(rel_type)
+                if has_edge_feat:
+                    feat = np.array([float(x) for x in e[6:]])
+                else:
+                    feat = np.zeros(1)
+            elif has_edge_feat:    
+                feat = np.array([float(x) for x in e[4:]])
+            else:
+                feat = np.zeros(1)
             
             # Each interaction (edge) is one entry in these lists
             u_list.append(u)
             i_list.append(i)
             ts_list.append(ts)
             label_list.append(label)
-            idx_list.append(idx)
-            
+            idx_list.append(idx)            
             feat_l.append(feat)
-    return pd.DataFrame({'u': u_list, 
+                 
+    df, feat = pd.DataFrame({'u': u_list, 
                          'i':i_list, 
                          'ts':ts_list, 
                          'label':label_list, 
-                         'idx':idx_list}), np.array(feat_l)
+                         'idx':idx_list}),np.array(feat_l)
+    if is_hetero:
+        # ensure relation types start from 1
+        rel_type_arr = np.array(rel_type_list).astype(int)
+        rel_type_arr = rel_type_arr - rel_type_arr.min() + 1
+        df['rel_type'] = rel_type_arr      
+    
+    return df, feat
+
+
+def reindex(df, is_hetero=False):
+    if not is_hetero:
+        # no missing integers
+        assert(df.u.max() - df.u.min() + 1 == len(df.u.unique())) # n-p+1 :) number of element between max and min
+        assert(df.i.max() - df.i.min() + 1 == len(df.i.unique()))
+        
+        # If users from 0..U-1
+        # Then items start from U..U+I-1
+        # ensure no overlap in node IDs
+        upper_u = df.u.max() + 1
+        new_i = df.i + upper_u
+        
+        new_df = df.copy()
+        print(new_df.u.max())
+        print(new_df.i.max())
+        
+        new_df.i = new_i
+        new_df.u += 1 # users \in [1, U]
+        new_df.i += 1 # items \in [U+1, U+I]
+        new_df.idx += 1 # edge idx \in [1, E]
+        # total nodes = U + I
+        
+        print(new_df.u.max())
+        print(new_df.i.max())
+        
+        return new_df
+    else:
+        df2 = df.copy()
+
+        # keep original node IDs exactly as they are
+        df2['u'] = df2['u'] + 1
+        df2['i'] = df2['i'] + 1
+        df2['idx'] = df2['idx'] +1 # no shift needed
+
+        # nothing else changes  
+        return df2
 
 
 
-def reindex(df):
-    # no missing integers
-    assert(df.u.max() - df.u.min() + 1 == len(df.u.unique())) # n-p+1 :) number of element between max and min
-    assert(df.i.max() - df.i.min() + 1 == len(df.i.unique()))
+def run(data_name, is_hetero=False, has_edge_feat=True):
+    PATH = './DATA/{}/original/{}.csv'.format(data_name, data_name)
+    OUT_DF = './DATA/{}/original/ml_{}.csv'.format(data_name, data_name)
+    OUT_FEAT = './DATA/{}/original/ml_{}.npy'.format(data_name, data_name)
+    OUT_NODE_FEAT = './DATA/{}/original/ml_{}_node.npy'.format(data_name, data_name)
     
-    # If users from 0..U-1
-    # Then items start from U..U+I-1
-    # ensure no overlap in node IDs
-    upper_u = df.u.max() + 1
-    new_i = df.i + upper_u
-    
-    new_df = df.copy()
-    print(new_df.u.max())
-    print(new_df.i.max())
-    
-    new_df.i = new_i
-    new_df.u += 1 # users \in [1, U]
-    new_df.i += 1 # items \in [U+1, U+I]
-    new_df.idx += 1 # edge idx \in [1, E]
-    # total nodes = U + I
-    
-    print(new_df.u.max())
-    print(new_df.i.max())
-    
-    return new_df
-
-
-
-def run(data_name):
-    PATH = './DATA/{}.csv'.format(data_name)
-    OUT_DF = './DATA/ml_{}.csv'.format(data_name)
-    OUT_FEAT = './DATA/ml_{}.npy'.format(data_name)
-    OUT_NODE_FEAT = './DATA/ml_{}_node.npy'.format(data_name)
-    
-    df, feat = preprocess(PATH)
-    new_df = reindex(df)
+    df, feat = preprocess(PATH,  is_hetero=is_hetero, has_edge_feat=has_edge_feat)
+    new_df = reindex(df, is_hetero=is_hetero)
     
     print(feat.shape)
     # Adds a zero-vector feature for index 0 (the padding index)
@@ -98,19 +126,23 @@ def run(data_name):
     np.save(OUT_NODE_FEAT, rand_feat) # node feature matrix (zeros)
     
 def convert_tgat_to_tspear(dataset_name):
-    tgat_csv      = f'tgat_data/original/ml_{dataset_name}.csv' # edge list
-    edge_feat_npy = f'tgat_data/original/ml_{dataset_name}.npy' # edge features
-    node_feat_npy = f'tgat_data/original/ml_{dataset_name}_node.npy' # node features
+    tgat_csv      = f'./DATA/{dataset_name}/original/ml_{dataset_name}.csv' # edge list
+    edge_feat_npy = f'./DATA/{dataset_name}/original/ml_{dataset_name}.npy' # edge features
+    node_feat_npy = f'./DATA/{dataset_name}/original/ml_{dataset_name}_node.npy' # node features
 
-    df      = pd.read_csv(tgat_csv)   # columns: u,i,ts,label,idx
+    df      = pd.read_csv(tgat_csv)   # columns: u,i,ts,label,idx (rel_type)
     edge_f  = np.load(edge_feat_npy)     # shape = [edges+1, feat_dim]
     node_f  = np.load(node_feat_npy)     # shape = [nodes+1, feat_dim]
 
     out_dir = f'DATA/{dataset_name}'
     os.makedirs(out_dir, exist_ok=True)
 
-    edges_out = df[['u','i','ts']].copy()
-    edges_out.columns = ['src','dst','time']# rename columns
+    if 'rel_type' in df.columns:
+        edges_out = df[['u','i','ts','rel_type']].copy()
+        edges_out.columns = ['src','dst','time','rel_type']# rename columns
+    else:
+        edges_out = df[['u','i','ts']].copy()
+        edges_out.columns = ['src','dst','time']
     val_time, test_time = edges_out.time.quantile([0.70,0.85]).values
     # First 70 % -> training
     # Next 15 % -> validation
@@ -232,3 +264,8 @@ def convert_tgat_to_tspear(dataset_name):
     torch.save(nf, os.path.join(out_dir,'node_features.pt'))
 
     print("Converted TGAT files to TSPEAR format.")
+
+if __name__ == "__main__":
+    dataset_name = 'software'
+    run(dataset_name, is_hetero=True, has_edge_feat=False)
+    convert_tgat_to_tspear(dataset_name)
