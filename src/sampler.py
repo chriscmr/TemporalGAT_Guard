@@ -5,9 +5,14 @@ import time
 import numpy as np
 import pandas as pd
 from tqdm import tqdm
+import pickle
 from sampler_core import ParallelSampler, TemporalGraphBlock
 #do cd here then
 #export PYTHONPATH=$(pwd):$PYTHONPATH 
+#export CC=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-gcc
+#export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
+# conda install -c conda-forge gcc_linux-64 gxx_linux-64
+# python setup.py build_ext --inplace
 class NegLinkSampler:
 
     def __init__(self, num_nodes):
@@ -60,20 +65,38 @@ class NegLinkSamplerDST:
 
 if __name__ == '__main__':
     parser=argparse.ArgumentParser()
-    parser.add_argument('--data', type=str, help='dataset name')
-    parser.add_argument('--config', type=str, help='path to config file')
+    parser.add_argument('--data', type=str, help='dataset name', default='software')
+    parser.add_argument('--config', type=str, help='path to config file', default='../config/TGN.yml')
     parser.add_argument('--batch_size', type=int, default=600, help='path to config file')
     parser.add_argument('--num_thread', type=int, default=64, help='number of thread')
     args=parser.parse_args()
 
-    df = pd.read_csv('DATA/{}/edges.csv'.format(args.data))
-    g = np.load('DATA/{}/ext_full.npz'.format(args.data))
+    df = pd.read_csv('../DATA/{}/edges.csv'.format(args.data))
+    # g = np.load('DATA/{}/ext_full.npz'.format(args.data))
+    with open('../DATA/{}/ext_full.pkl'.format(args.data), 'rb') as f:
+        g = pickle.load(f) # graph dict
+    edge_rel_type = df['rel_type'].values.astype(np.int32)
     sample_config = yaml.safe_load(open(args.config, 'r'))['sampling'][0]
+    rel_per_event = df['rel_type'].to_numpy(np.int32)
 
-    sampler = ParallelSampler(g['indptr'], g['indices'], g['eid'], g['ts'].astype(np.float32),
-                              args.num_thread, 1, sample_config['layer'], sample_config['neighbor'],
-                              sample_config['strategy']=='recent', sample_config['prop_time'],
-                              sample_config['history'], float(sample_config['duration']))
+    # CSR-aligned rel_type (same length as g['indices'])
+    edge_rel_type = rel_per_event[g['eid']-1] 
+    # sampler = ParallelSampler(g['indptr'], g['indices'], g['eid'], g['ts'].astype(np.float32),
+    #                           args.num_thread, 1, sample_config['layer'], sample_config['neighbor'],
+    #                           sample_config['strategy']=='recent', sample_config['prop_time'],
+    #                           sample_config['history'], float(sample_config['duration']))
+
+    sampler = ParallelSampler(
+    g['indptr'].tolist(),
+    g['indices'].tolist(),
+    g['eid'].tolist(),
+    edge_rel_type.tolist(),
+    g['ts'].astype(np.float32).tolist(),
+    args.num_thread, 1, sample_config['layer'], sample_config['neighbor'],
+    sample_config['strategy'] == 'recent', sample_config['prop_time'],
+    sample_config['history'], float(sample_config['duration'])
+)
+
 
     num_nodes = max(int(df['src'].max()), int(df['dst'].max()))
     neg_link_sampler = NegLinkSampler(num_nodes)
@@ -108,6 +131,7 @@ if __name__ == '__main__':
         #         uni_time += time.time() - uni_t_s
         #         total_nodes += idx.shape[0]
         #         unique_nodes += unts.shape[0]
+        # break   only one batch for testing
 
     print('total time  : {:.4f}'.format(tot_time))
     print('pointer time: {:.4f}'.format(ptr_time))

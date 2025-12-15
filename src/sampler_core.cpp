@@ -23,6 +23,7 @@ class TemporalGraphBlock
         std::vector<TimeStampType> ts;
         std::vector<TimeStampType> dts;
         std::vector<NodeIDType> nodes;
+        std::vector<int> rel_type;   // empty if not hetero
         NodeIDType dim_in, dim_out;
         double ptr_time = 0;
         double search_time = 0;
@@ -47,6 +48,8 @@ class ParallelSampler
         std::vector<EdgeIDType> indices;
         std::vector<EdgeIDType> eid;
         std::vector<TimeStampType> ts;
+        bool store_rel; // added
+        std::vector<int> edge_rel_type;   // only valid if store_rel == true
         NodeIDType num_nodes;
         EdgeIDType num_edges;
         int num_thread_per_worker;
@@ -60,7 +63,7 @@ class ParallelSampler
         TimeStampType window_duration;
         std::vector<std::vector<std::vector<EdgeIDType>::size_type>> ts_ptr;
         omp_lock_t *ts_ptr_lock;
-        std::vector<TemporalGraphBlock> ret;
+        std::vector<TemporalGraphBlock> ret;        
 
         ParallelSampler(std::vector<EdgeIDType> &_indptr, std::vector<EdgeIDType> &_indices,
                         std::vector<EdgeIDType> &_eid, std::vector<TimeStampType> &_ts,
@@ -71,7 +74,8 @@ class ParallelSampler
                         num_thread_per_worker(_num_thread_per_worker), num_workers(_num_workers),
                         num_layers(_num_layers), num_neighbors(_num_neighbors), recent(_recent),
                         num_history(_num_history), window_duration(_window_duration)
-        {
+        {   
+            store_rel = false;
             omp_set_num_threads(num_thread_per_worker * num_workers);
             num_threads = num_thread_per_worker * num_workers;
             num_nodes = indptr.size() - 1;
@@ -98,6 +102,42 @@ class ParallelSampler
                 for (auto itt = indptr.begin(); itt < indptr.end() - 1; itt++)
                     (*it)[itt - indptr.begin()] = *itt;
             }
+        }
+
+        ParallelSampler(std::vector<EdgeIDType> &_indptr, std::vector<EdgeIDType> &_indices,
+                        std::vector<EdgeIDType> &_eid, std::vector<int> &_edge_rel_type,   // NEW
+                         std::vector<TimeStampType> &_ts,
+                        int _num_thread_per_worker, int _num_workers, int _num_layers,
+                        std::vector<int> &_num_neighbors, bool _recent, bool _prop_time,
+                        int _num_history, TimeStampType _window_duration) :
+                        indptr(_indptr), indices(_indices), eid(_eid), edge_rel_type(_edge_rel_type), ts(_ts), prop_time(_prop_time),
+                        num_thread_per_worker(_num_thread_per_worker), num_workers(_num_workers),
+                        num_layers(_num_layers), num_neighbors(_num_neighbors), recent(_recent),
+                        num_history(_num_history), window_duration(_window_duration)
+        {
+            store_rel = true;
+
+            if (edge_rel_type.size() != indices.size()) {
+                throw std::runtime_error("edge_rel_type size mismatch");
+            }
+            omp_set_num_threads(num_thread_per_worker * num_workers);
+            num_threads = num_thread_per_worker * num_workers;
+            num_nodes = indptr.size() - 1;
+            num_edges = indices.size();
+
+            ts_ptr_lock = (omp_lock_t *)malloc(num_nodes * sizeof(omp_lock_t));
+            for (int i = 0; i < num_nodes; i++)
+                omp_init_lock(&ts_ptr_lock[i]);
+
+            ts_ptr.resize(num_history + 1);
+            for (auto it = ts_ptr.begin(); it != ts_ptr.end(); it++)
+            {
+                it->resize(indptr.size() - 1);
+            #pragma omp parallel for
+                for (auto itt = indptr.begin(); itt < indptr.end() - 1; itt++)
+                    (*it)[itt - indptr.begin()] = *itt;
+            }
+
         }
 
         void update_ts_ptr(int slc, std::vector<NodeIDType> &root_nodes, 
@@ -129,6 +169,7 @@ class ParallelSampler
         inline void add_neighbor(std::vector<NodeIDType> *_row, std::vector<NodeIDType> *_col,
                                  std::vector<EdgeIDType> *_eid, std::vector<TimeStampType> *_ts,
                                  std::vector<TimeStampType> *_dts, std::vector<NodeIDType> *_nodes, 
+                                 std::vector<int>* _rel,   // NEW
                                  EdgeIDType &k, TimeStampType &src_ts, int &row_id)
         {
             _row->push_back(row_id);
@@ -140,6 +181,9 @@ class ParallelSampler
                 _ts->push_back(ts[k]);
             _dts->push_back(src_ts - ts[k]);
             _nodes->push_back(indices[k]);
+            if (store_rel && _rel != nullptr) {
+                _rel->push_back(edge_rel_type[k]);
+            }
             // _row.push_back(0);
             // _col.push_back(0);
             // _eid.push_back(0);
@@ -156,6 +200,7 @@ class ParallelSampler
                                 std::vector<TimeStampType> **_ts, 
                                 std::vector<TimeStampType> **_dts,
                                 std::vector<NodeIDType> **_nodes,
+                                std::vector<int> **_rel, //added
                                 std::vector<int> &_out_nodes)
         {
             std::vector<EdgeIDType> cum_row, cum_col;
@@ -171,6 +216,9 @@ class ParallelSampler
             _ret.row.resize(cum_col.back());
             _ret.col.resize(cum_col.back());
             _ret.eid.resize(cum_col.back());
+            if (store_rel) {
+                _ret.rel_type.resize(cum_col.back());
+            }
             _ret.ts.resize(cum_col.back() + num_root_nodes);
             _ret.dts.resize(cum_col.back() + num_root_nodes);
             _ret.nodes.resize(cum_col.back() + num_root_nodes);
@@ -184,6 +232,11 @@ class ParallelSampler
                 std::copy(_row[tid]->begin(), _row[tid]->end(), _ret.row.begin() + cum_col[tid]);
                 std::copy(_col[tid]->begin(), _col[tid]->end(), _ret.col.begin() + cum_col[tid]);
                 std::copy(_eid[tid]->begin(), _eid[tid]->end(), _ret.eid.begin() + cum_col[tid]);
+                if (store_rel && _rel != nullptr) {
+                    std::copy(_rel[tid]->begin(), _rel[tid]->end(),
+                            _ret.rel_type.begin() + cum_col[tid]);
+                    delete _rel[tid];
+                }
                 std::copy(_ts[tid]->begin(), _ts[tid]->end(), _ret.ts.begin() + cum_col[tid] + num_root_nodes);
                 std::copy(_dts[tid]->begin(), _dts[tid]->end(), _ret.dts.begin() + cum_col[tid] + num_root_nodes);
                 std::copy(_nodes[tid]->begin(), _nodes[tid]->end(), _ret.nodes.begin() + cum_col[tid] + num_root_nodes);
@@ -231,6 +284,7 @@ class ParallelSampler
                 std::vector<TimeStampType> *_ts[num_threads];
                 std::vector<TimeStampType> *_dts[num_threads];
                 std::vector<NodeIDType> *_nodes[num_threads];
+                std::vector<int> *_rel[num_threads];   // NEW
                 std::vector<int> _out_node(num_threads, 0);
                 int reserve_capacity = int(ceil((*root_nodes).size() / num_threads)) * neighs;
 #pragma omp parallel
@@ -249,6 +303,10 @@ class ParallelSampler
                     _ts[tid]->reserve(reserve_capacity);
                     _dts[tid]->reserve(reserve_capacity);
                     _nodes[tid]->reserve(reserve_capacity);
+                    if (store_rel) {
+                        _rel[tid] = new std::vector<int>;
+                        _rel[tid]->reserve(reserve_capacity);
+                    }
 // #pragma omp critical
 //                     std::cout<<tid<<" sampling: "<<root_nodes->size()<<" "<<int(ceil((*root_nodes).size() / num_threads))<<std::endl;
 #pragma omp for schedule(static, int(ceil(static_cast<float>((*root_nodes).size()) / num_threads)))
@@ -300,7 +358,8 @@ class ParallelSampler
                                 if (ts[k] < nts + offset - 1e-7f)
                                 {
                                     add_neighbor(_row[tid], _col[tid], _eid[tid], _ts[tid], 
-                                                 _dts[tid], _nodes[tid], k, nts, _out_node[tid]);
+                                                 _dts[tid], _nodes[tid], store_rel ? _rel[tid] : nullptr,
+                                                 k, nts, _out_node[tid]);
                                 }
                             }
                         }
@@ -313,7 +372,9 @@ class ParallelSampler
                                 if (ts[picked] < nts + offset - 1e-7f)
                                 {
                                     add_neighbor(_row[tid], _col[tid], _eid[tid], _ts[tid], 
-                                                 _dts[tid], _nodes[tid], picked, nts, _out_node[tid]);
+                                                 _dts[tid], _nodes[tid], 
+                                                 store_rel ? _rel[tid] : nullptr,
+                                                 picked, nts, _out_node[tid]);
                                 }
                             }
                         }
@@ -328,7 +389,9 @@ class ParallelSampler
                 ret[ret.size() - 1 - i].nodes.insert(ret[ret.size() - 1 - i].nodes.end(), 
                                                      root_nodes->begin(), root_nodes->end());
                 ret[ret.size() - 1 - i].dts.resize(root_nodes->size());
-                combine_coo(ret[ret.size() - 1 - i], _row, _col, _eid, _ts, _dts, _nodes, _out_node);
+                combine_coo(ret[ret.size() - 1 - i], _row, _col, _eid, _ts, _dts, _nodes,
+                            store_rel ? _rel : nullptr, // added
+                             _out_node);
                 ret[0].coo_time += omp_get_wtime() - t_coo_s;
             }
             ret[0].tot_time += omp_get_wtime() - t_s;
@@ -374,10 +437,10 @@ inline py::array vec2npy(const std::vector<T> &vec)
 PYBIND11_MODULE(sampler_core, m)
 {
     py::class_<TemporalGraphBlock>(m, "TemporalGraphBlock")
-        .def(py::init<std::vector<NodeIDType> &, std::vector<NodeIDType> &,
-                      std::vector<EdgeIDType> &, std::vector<TimeStampType> &,
-                      std::vector<TimeStampType> &, std::vector<NodeIDType> &,
-                      NodeIDType, NodeIDType>())
+        // .def(py::init<std::vector<NodeIDType> &, std::vector<NodeIDType> &,
+        //               std::vector<EdgeIDType> &, std::vector<TimeStampType> &,
+        //               std::vector<TimeStampType> &, std::vector<NodeIDType> &,
+        //               NodeIDType, NodeIDType>())
         .def("row", [](const TemporalGraphBlock &tgb) { return vec2npy(tgb.row); })
         .def("col", [](const TemporalGraphBlock &tgb) { return vec2npy(tgb.col); })
         .def("eid", [](const TemporalGraphBlock &tgb) { return vec2npy(tgb.eid); })
@@ -390,12 +453,27 @@ PYBIND11_MODULE(sampler_core, m)
         .def("ptr_time", [](const TemporalGraphBlock &tgb) { return tgb.ptr_time; })
         .def("search_time", [](const TemporalGraphBlock &tgb) { return tgb.search_time; })
         .def("sample_time", [](const TemporalGraphBlock &tgb) { return tgb.sample_time; })
-        .def("coo_time", [](const TemporalGraphBlock &tgb) { return tgb.coo_time; });
+        .def("coo_time", [](const TemporalGraphBlock &tgb) { return tgb.coo_time; })
+        .def("rel_type", [](const TemporalGraphBlock &tgb) {
+            return vec2npy(tgb.rel_type);
+        });
     py::class_<ParallelSampler>(m, "ParallelSampler")
+        // ===== Homogeneous constructor =====
         .def(py::init<std::vector<EdgeIDType> &, std::vector<EdgeIDType> &,
                       std::vector<EdgeIDType> &, std::vector<TimeStampType> &,
                       int, int, int, std::vector<int> &, bool, bool,
                       int, TimeStampType>())
+        // ===== Heterogeneous constructor =====
+        .def(py::init<
+            std::vector<EdgeIDType> &,   
+            std::vector<EdgeIDType> &,   
+            std::vector<EdgeIDType> &,   
+            std::vector<int> &,          // new edge_rel_type  
+            std::vector<TimeStampType> &,
+            int, int, int,
+            std::vector<int> &, bool, bool,
+            int, TimeStampType>())
+
         .def("sample", &ParallelSampler::sample)
         .def("reset", &ParallelSampler::reset)
         .def("get_ret", [](const ParallelSampler &ps) { return ps.ret; });

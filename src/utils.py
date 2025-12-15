@@ -127,10 +127,10 @@ def load_data(data, args):
     #     rand_edge_features = 128
     node_feats, edge_feats = load_feat(data, rand_edge_features, rand_node_features)
     # node_feats, edge_feats = None, None
-    g, df = load_graph(data) # graph dict and edge dataframe
+    g, df, edge_rel_type = load_graph(data) # graph dict and edge dataframe
     # if data == "UCI":
     #     edge_feats = torch.randn(len(df), 128)
-    return node_feats, edge_feats, g, df
+    return node_feats, edge_feats, g, df, edge_rel_type
 
 
 def load_feat(d, rand_de=0, rand_dn=0):
@@ -171,7 +171,8 @@ def load_graph(d):
     # g = np.load('DATA/{}/ext_full.npz'.format(d))
     with open(f'DATA/{d}/ext_full.pkl', 'rb') as f:
         g = pickle.load(f) # graph dict
-    return g, df
+    edge_rel_type = torch.from_numpy(df['rel_type'].values)
+    return g, df, edge_rel_type
 
 
 def get_attacked_data_dir(args):
@@ -192,10 +193,10 @@ def load_attacked_data(data, args):
     rand_node_features = 0 if not hasattr(args, 'rand_node_features') else args.rand_node_features
     node_feats, edge_feats = load_attacked_feat(data, args, rand_edge_features, rand_node_features)
     # node_feats, edge_feats = None, None 
-    g, df = load_attacked_graph(data, args)
+    g, df, edge_rel_type = load_attacked_graph(data, args)
     # if data == "UCI":
     #     edge_feats = torch.randn(len(df), 128)
-    return node_feats, edge_feats, g, df
+    return node_feats, edge_feats, g, df, edge_rel_type
 
 
 def load_attacked_feat(d, args, rand_de=0, rand_dn=0):
@@ -232,7 +233,8 @@ def load_attacked_graph(d, args):
     df = pd.read_csv(f'{data_dir}/edges.csv')
     with open(f'{data_dir}/ext_full.pkl', 'rb') as f:
         g = pickle.load(f)
-    return g, df
+    edge_rel_type = torch.from_numpy(df['rel_type'].values)
+    return g, df, edge_rel_type
 
 
 def parse_config(model):
@@ -307,7 +309,7 @@ def mfgs_to_cuda(mfgs):
     return mfgs
 
 
-def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=False, nfeat_buffs=None, efeat_buffs=None, nids=None, eids=None):
+def prepare_input(mfgs, node_feats, edge_feats, edge_rel_type, combine_first=False, pinned=False, nfeat_buffs=None, efeat_buffs=None, nids=None, eids=None):
     # mfgs list of DGL blocks ([[l0h0, l0h1], [l1h0, l1h1], ...])
     # node_feats tensor [num_nodes+1, dim_node]
     # edge_feats tensor [num_edges+1, dim_edge]
@@ -365,8 +367,10 @@ def prepare_input(mfgs, node_feats, edge_feats, combine_first=False, pinned=Fals
                             idx = b.edata['ID'].cpu().long()
                         torch.index_select(edge_feats, 0, idx, out=efeat_buffs[i][:idx.shape[0]])
                         b.edata['f'] = efeat_buffs[i][:idx.shape[0]].cuda(non_blocking=True)
+                        b.edata['rel_type'] = edge_rel_type[idx].long().cuda(non_blocking=True)
                         i += 1
                     else:
                         srch = edge_feats[b.edata['ID'].long().cpu()].float()
                         b.edata['f'] = srch.cuda()
+                        b.edata['rel_type'] = edge_rel_type[b.edata['ID'].long().cpu()].long().cuda()
     return mfgs

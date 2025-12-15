@@ -160,10 +160,8 @@ class TransfomerAttentionLayer(torch.nn.Module):
             if self.is_hetero:
                 # edge_input = [edge_feat, rel_vec] or  [rel_vec]
                 if self.dim_edge_feat > 0:
-                    if 'f' in b.edata and b.edata['f'].numel() > 0:
-                        edge_input = torch.cat([b.edata['f'], rel_vec], dim=1)
-                    else:
-                        edge_input = rel_vec
+                    assert 'f' in b.edata, "dim_edge_feat > 0 but no 'f' in b.edata"
+                    edge_input = torch.cat([b.edata['f'], rel_vec], dim=1)
                 else:
                     edge_input = rel_vec
 

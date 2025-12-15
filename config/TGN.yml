@@ -22,6 +22,8 @@ gnn:
     att_head: 2
     dim_time: 100
     dim_out: 100
+    is_hetero: True
+    num_relations: 5
 train:
   - epoch: 100
     batch_size: 600
