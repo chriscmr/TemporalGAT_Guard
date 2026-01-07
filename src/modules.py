@@ -20,13 +20,24 @@ class GeneralModel(torch.nn.Module):
         self.gnn_param = gnn_param
         self.dim_out = gnn_param['dim_out']
         self.train_param = train_param
+
+        self.dim_mail_rel = 32 #or memory_param['dim_out']
+        if self.is_hetero:
+            self.mail_rel_emb = torch.nn.Embedding(self.num_relations + 1, self.dim_mail_rel)
+        else:
+            self.mail_rel_emb = None
+        
+        mail_in_dim = 2 * memory_param['dim_out'] + dim_edge
+        if self.is_hetero:
+            mail_in_dim += self.dim_mail_rel
+
         if memory_param['type'] == 'node':
             if memory_param['memory_update'] == 'gru':
-                self.memory_updater = GRUMemeoryUpdater(memory_param, 2 * memory_param['dim_out'] + dim_edge, memory_param['dim_out'], memory_param['dim_time'], dim_node)
+                self.memory_updater = GRUMemeoryUpdater(memory_param, mail_in_dim, memory_param['dim_out'], memory_param['dim_time'], dim_node)
             elif memory_param['memory_update'] == 'rnn':
-                self.memory_updater = RNNMemeoryUpdater(memory_param, 2 * memory_param['dim_out'] + dim_edge, memory_param['dim_out'], memory_param['dim_time'], dim_node)
+                self.memory_updater = RNNMemeoryUpdater(memory_param, mail_in_dim, memory_param['dim_out'], memory_param['dim_time'], dim_node)
             elif memory_param['memory_update'] == 'transformer':
-                self.memory_updater = TransformerMemoryUpdater(memory_param, 2 * memory_param['dim_out'] + dim_edge, memory_param['dim_out'], memory_param['dim_time'], train_param)
+                self.memory_updater = TransformerMemoryUpdater(memory_param, mail_in_dim, memory_param['dim_out'], memory_param['dim_time'], train_param)
             else:
                 raise NotImplementedError
             self.dim_node_input = memory_param['dim_out']

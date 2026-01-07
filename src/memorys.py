@@ -36,14 +36,20 @@ class EmbeddingBox():
 
 class MailBox():
 
-    def __init__(self, memory_param, num_nodes, dim_edge_feat, _node_memory=None, _node_memory_ts=None,_mailbox=None, _mailbox_ts=None, _next_mail_pos=None, _update_mail_pos=None):
+    def __init__(self, memory_param, num_nodes, dim_edge_feat,
+                 is_hetero=False, dim_rel=0,
+                _node_memory=None, _node_memory_ts=None,
+                _mailbox=None, _mailbox_ts=None, _next_mail_pos=None, _update_mail_pos=None):
+        
         self.memory_param = memory_param
         self.dim_edge_feat = dim_edge_feat
+        self.is_hetero = is_hetero
+        self.dim_rel = dim_rel if is_hetero else 0
         if memory_param['type'] != 'node':
             raise NotImplementedError
         self.node_memory = torch.zeros((num_nodes, memory_param['dim_out']), dtype=torch.float32) if _node_memory is None else _node_memory
         self.node_memory_ts = torch.zeros(num_nodes, dtype=torch.float32) if _node_memory_ts is None else _node_memory_ts
-        self.mailbox = torch.zeros((num_nodes, memory_param['mailbox_size'], 2 * memory_param['dim_out'] + dim_edge_feat), dtype=torch.float32) if _mailbox is None else _mailbox
+        self.mailbox = torch.zeros((num_nodes, memory_param['mailbox_size'], 2 * memory_param['dim_out'] + dim_edge_feat + self.dim_rel), dtype=torch.float32) if _mailbox is None else _mailbox
         self.mailbox_ts = torch.zeros((num_nodes, memory_param['mailbox_size']), dtype=torch.float32) if _mailbox_ts is None else _mailbox_ts
         self.next_mail_pos = torch.zeros((num_nodes), dtype=torch.long) if _next_mail_pos is None else _next_mail_pos
         self.update_mail_pos = _update_mail_pos
@@ -126,9 +132,13 @@ class MailBox():
             self.node_memory[nid.long()] = memory
             self.node_memory_ts[nid.long()] = ts
 
-    def update_mailbox(self, nid, memory, root_nodes, ts, edge_feats, block, neg_samples=1):
+    def update_mailbox(self, nid, memory, root_nodes, ts, edge_feats, block, rel_emb=None, neg_samples=1):
         with torch.no_grad():
             num_true_edges = root_nodes.shape[0] // (neg_samples + 2)
+            if self.is_hetero:
+                rel_emb = rel_emb[:num_true_edges * 2]
+            else:
+                rel_emb = None
             memory = memory.to(self.device)
             if edge_feats is not None:
                 edge_feats = edge_feats.to(self.device)
@@ -140,12 +150,21 @@ class MailBox():
                 dst = torch.from_numpy(root_nodes[num_true_edges:num_true_edges * 2]).to(self.device)
                 mem_src = memory[:num_true_edges]
                 mem_dst = memory[num_true_edges:num_true_edges * 2]
-                if self.dim_edge_feat > 0:
-                    src_mail = torch.cat([mem_src, mem_dst, edge_feats], dim=1)
-                    dst_mail = torch.cat([mem_dst, mem_src, edge_feats], dim=1)
-                else:
-                    src_mail = torch.cat([mem_src, mem_dst], dim=1)
-                    dst_mail = torch.cat([mem_dst, mem_src], dim=1)
+                parts_src = [mem_src, mem_dst]
+                parts_dst = [mem_dst, mem_src]
+
+                if edge_feats is not None:
+                    parts_src.append(edge_feats)
+                    parts_dst.append(edge_feats)
+
+                if self.is_hetero:
+                    # rel_emb must be [num_true_edges*2, dim_rel] aligned with root_nodes order
+                    assert rel_emb is not None, "Hetero mailbox requires rel_emb"
+                    parts_src.append(rel_emb)
+                    parts_dst.append(rel_emb)
+
+                src_mail = torch.cat(parts_src, dim=1)
+                dst_mail = torch.cat(parts_dst, dim=1)
                 mail = torch.cat([src_mail, dst_mail], dim=1).reshape(-1, src_mail.shape[1])
                 nid = torch.cat([src.unsqueeze(1), dst.unsqueeze(1)], dim=1).reshape(-1)
                 mail_ts = torch.from_numpy(ts[:num_true_edges * 2]).to(self.device)
@@ -164,7 +183,8 @@ class MailBox():
                     if self.memory_param['mailbox_size'] > 1:
                         self.next_mail_pos[nid.long()] = torch.remainder(self.next_mail_pos[nid.long()] + 1, self.memory_param['mailbox_size'])
             # APAN
-            elif self.memory_param['deliver_to'] == 'neighbors':
+            elif self.is_hetero and self.memory_param['deliver_to'] == 'neighbors':
+                raise NotImplementedError("Hetero mailbox not implemented for deliver_to='neighbors'")
                 mem_src = memory[:num_true_edges]
                 mem_dst = memory[num_true_edges:num_true_edges * 2]
                 if self.dim_edge_feat > 0:
