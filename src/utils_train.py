@@ -22,15 +22,26 @@ from .utils import (
 )
 from pympler.tracker import SummaryTracker
 
-def create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param):
+def create_model_mailbox_sampler(node_feats, edge_feats, g, df,
+                                 sample_param, memory_param, 
+                                 gnn_param, train_param, is_hetero=False):
     gnn_dim_node = 0 if node_feats is None else node_feats.shape[1]
     gnn_dim_edge = 0 if edge_feats is None else edge_feats.shape[1]
     combine_first = False
     if 'combine_neighs' in train_param and train_param['combine_neighs']:
         combine_first = True
 
-    model = GeneralModel(gnn_dim_node, gnn_dim_edge, sample_param, memory_param, gnn_param, train_param, combined=combine_first).cuda()
-    mailbox = MailBox(memory_param, g['indptr'].shape[0] - 1, gnn_dim_edge) if memory_param['type'] != 'none' else None
+    num_relations = int(df["rel_type"].max()) if (is_hetero and "rel_type" in df.columns) else 1
+    model = GeneralModel(gnn_dim_node, gnn_dim_edge, sample_param, 
+                         memory_param, gnn_param, train_param, 
+                         combined=combine_first, is_hetero=is_hetero, 
+                         num_relations=num_relations).cuda()
+    mailbox = None
+    if memory_param['type'] != 'none':
+        mailbox = MailBox(memory_param, g['indptr'].shape[0] - 1,
+                           gnn_dim_edge, is_hetero=is_hetero,
+                           dim_rel=(model.dim_mail_rel if is_hetero else 0))
+
     if 'all_on_gpu' in train_param and train_param['all_on_gpu']:
         if node_feats is not None:
             node_feats = node_feats.cuda()
@@ -41,10 +52,28 @@ def create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, me
     
     sampler = None
     if not ('no_sample' in sample_param and sample_param['no_sample']):
-        sampler = ParallelSampler(g['indptr'], g['indices'], g['eid'], g['ts'].astype(np.float32),
-                                  sample_param['num_thread'], 1, sample_param['layer'], sample_param['neighbor'],
-                                  sample_param['strategy']=='recent', sample_param['prop_time'],
-                                  sample_param['history'], float(sample_param['duration']))
+        if is_hetero:
+            rel_per_event = df['rel_type'].to_numpy(np.int32)
+            edge_rel_type = rel_per_event[g['eid'] - 1].astype(np.int32)
+
+            sampler = ParallelSampler(
+                g['indptr'], g['indices'], g['eid'],
+                edge_rel_type, g['ts'].astype(np.float32),
+                sample_param['num_thread'], 1,
+                sample_param['layer'], sample_param['neighbor'],
+                sample_param['strategy'] == 'recent',
+                sample_param['prop_time'],
+                sample_param['history'], float(sample_param['duration'])
+            )
+        else:
+            sampler = ParallelSampler(
+                g['indptr'], g['indices'], g['eid'], g['ts'].astype(np.float32),
+                sample_param['num_thread'], 1,
+                sample_param['layer'], sample_param['neighbor'],
+                sample_param['strategy'] == 'recent',
+                sample_param['prop_time'],
+                sample_param['history'], float(sample_param['duration'])
+            )
     
     return model, mailbox, sampler
 

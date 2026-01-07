@@ -285,6 +285,7 @@ class ParallelSampler
                 std::vector<TimeStampType> *_dts[num_threads];
                 std::vector<NodeIDType> *_nodes[num_threads];
                 std::vector<int> *_rel[num_threads];   // NEW
+                for (int t = 0; t < num_threads; ++t) _rel[t] = nullptr; // added
                 std::vector<int> _out_node(num_threads, 0);
                 int reserve_capacity = int(ceil((*root_nodes).size() / num_threads)) * neighs;
 #pragma omp parallel
