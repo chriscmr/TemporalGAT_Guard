@@ -101,7 +101,13 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler
     # input raw logits and applies sigmoid internally
     optimizer = torch.optim.Adam(model.parameters(), lr=train_param['lr'])
 
-    train_df = df[df['ext_roll'] == 0]  # training set  
+    train_df = df[df['ext_roll'] == 0]  # training set
+    is_hetero = getattr(model, "is_hetero", False)
+    edge_rel_type = None
+    if is_hetero:
+        rel_per_event = df['rel_type'].to_numpy(np.int32)
+        # rel_type (length == g['indices'])
+        edge_rel_type = rel_per_event[g['eid'] - 1]
 
     # best_val_auc = -1
     for e in range(1, train_param['epoch'] + 1):
@@ -150,7 +156,7 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler
             else:
                 mfgs = node_to_dgl_blocks(root_nodes, ts)
             # mfgs is a list of lists of DGL blocks
-            mfgs = prepare_input(mfgs, node_feats, edge_feats, combine_first=combine_first)
+            mfgs = prepare_input(mfgs, node_feats, edge_feats, edge_rel_type, combine_first=combine_first)
             if mailbox is not None:
                 mailbox.prep_input_mails(mfgs[0])
             time_prep += time.time() - t_prep_s
@@ -172,7 +178,14 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler
                 block = None
                 if memory_param['deliver_to'] == 'neighbors': ## for APAN
                     block = to_dgl_blocks(ret, sample_param['history'], reverse=True)[0][0]
-                mailbox.update_mailbox(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, ts, mem_edge_feats, block)
+                rel_emb = None
+                if is_hetero:
+                    # One rel_id per TRUE edge in this batch (not for negatives)
+                    rel_ids = rows['rel_type'].to_numpy().astype(np.int64)     # shape [E]
+                    rel_ids = np.tile(rel_ids, 2)                              # shape [2E] for [src,dst]
+                    rel_ids = torch.from_numpy(rel_ids).to(model.mail_rel_emb.weight.device)
+                    rel_emb = model.mail_rel_emb(rel_ids)                      # [2E, dim_mail_rel]
+                mailbox.update_mailbox(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, ts, mem_edge_feats, block, rel_emb = rel_emb)
                 mailbox.update_memory(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, model.memory_updater.last_updated_ts)            
             time_prep += time.time() - t_prep_s
             time_tot += time.time() - t_tot_s
@@ -439,6 +452,11 @@ def remove_noise(g, df, remove_df):
 @torch.no_grad()
 def link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='val', seed=None, evaluation=False):
     combine_first = False
+    is_hetero = getattr(model, "is_hetero", False)
+    edge_rel_type = None
+    if is_hetero:
+        rel_per_event = df['rel_type'].to_numpy(np.int32)
+        edge_rel_type = rel_per_event[g['eid'] - 1]
     if 'combine_neighs' in train_param and train_param['combine_neighs']:
         combine_first = True
 
@@ -492,7 +510,7 @@ def link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler,
                 mfgs = to_dgl_blocks(ret, sample_param['history'])
             else:
                 mfgs = node_to_dgl_blocks(root_nodes, ts)
-            mfgs = prepare_input(mfgs, node_feats, edge_feats, combine_first=combine_first)
+            mfgs = prepare_input(mfgs, node_feats, edge_feats, edge_rel_type, combine_first=combine_first)
             if mailbox is not None:
                 mailbox.prep_input_mails(mfgs[0])
 
@@ -525,7 +543,14 @@ def link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler,
                 block = None
                 if memory_param['deliver_to'] == 'neighbors':
                     block = to_dgl_blocks(ret, sample_param['history'], reverse=True)[0][0]
-                mailbox.update_mailbox(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, ts, mem_edge_feats, block, neg_samples=neg_samples)
+                rel_emb = None
+                if is_hetero:
+                    # one rel_id per TRUE edge (E), then tile to match [src, dst] length 2E
+                    rel_ids = rows['rel_type'].to_numpy().astype(np.int64)   # [E]
+                    rel_ids = np.tile(rel_ids, 2)                            # [2E]
+                    rel_ids = torch.from_numpy(rel_ids).to(model.mail_rel_emb.weight.device)
+                    rel_emb = model.mail_rel_emb(rel_ids)                    # [2E, dim_mail_rel]
+                mailbox.update_mailbox(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, ts, mem_edge_feats, block, rel_emb=rel_emb, neg_samples=neg_samples)
                 mailbox.update_memory(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, model.memory_updater.last_updated_ts, neg_samples=neg_samples)
 
     ap = float(torch.tensor(aps).mean())
