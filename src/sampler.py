@@ -23,7 +23,7 @@ class NegLinkSampler:
 
 class NegLinkSamplerDST:
 
-    def __init__(self, dsts, seed=None):
+    def __init__(self, dsts, rel_to_dst_types=None, type_to_nodes=None, seed=None):
         self.dsts = np.array(sorted(set(dsts)))
         i = 0
         self.dst_to_idx = {}
@@ -31,6 +31,10 @@ class NegLinkSamplerDST:
             self.dst_to_idx[dst] = i
             i += 1
         self.gen = np.random.default_rng(seed)
+
+        # new for hetero
+        self.rel_to_dst_types = rel_to_dst_types
+        self.type_to_nodes = type_to_nodes
 
     def sample(self, n):
         return self.gen.choice(self.dsts, n)
@@ -61,6 +65,20 @@ class NegLinkSamplerDST:
             negs[same] = neg
             same = poss == negs
         return negs
+    
+    def sample_v4_by_rel(self, rel_ids, positives, neg_samples=1):
+        out = []
+        for r, pos in zip(rel_ids, positives):
+            valid_types = self.rel_to_dst_types[int(r)]
+            t = int(self.gen.choice(valid_types))
+            pool = self.type_to_nodes[t]
+
+            neg = self.gen.choice(pool, size=neg_samples, replace=True)
+            while np.any(neg == pos):
+                mask = (neg == pos)
+                neg[mask] = self.gen.choice(pool, size=mask.sum(), replace=True)
+            out.append(neg)
+        return np.concatenate(out)
 
 
 if __name__ == '__main__':

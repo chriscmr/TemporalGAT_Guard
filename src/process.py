@@ -5,6 +5,79 @@ import pickle
 import torch
 import os
 
+def build_type_artifacts(
+    edges_csv_path: str,
+    nodes_csv_path: str,
+    out_dir: str,
+    node_id_col: str = "node_id",
+    node_type_col: str = "type",
+    src_col: str = "src",
+    dst_col: str = "dst",
+    rel_col: str = "rel_type",
+):
+    os.makedirs(out_dir, exist_ok=True)
+
+    df = pd.read_csv(edges_csv_path)
+    nodes = pd.read_csv(nodes_csv_path)
+
+    nodes = nodes.rename(columns={node_id_col: "nid_raw", node_type_col: "ntype"})
+    nodes["nid_raw"] = nodes["nid_raw"].astype(np.int64)
+    nodes["ntype"] = nodes["ntype"].astype(np.int32)
+
+    edges_min = int(min(df[src_col].min(), df[dst_col].min()))
+    nodes_min = int(nodes["nid_raw"].min())
+
+    if edges_min != 1:
+        raise ValueError(f"Expected 1-based edges, but min(src/dst)={edges_min}")
+
+    if nodes_min == 0:
+        nodes["nid"] = nodes["nid_raw"] + 1
+        node_shift = 1
+    elif nodes_min == 1:
+        nodes["nid"] = nodes["nid_raw"]
+        node_shift = 0
+    else:
+        raise ValueError(f"Unexpected nodes min id: {nodes_min} (expected 0 or 1)")
+
+    nodes["nid"] = nodes["nid"].astype(np.int64)
+
+    max_nid = int(max(df[src_col].max(), df[dst_col].max(), nodes["nid"].max()))
+    node_type = np.full(max_nid + 1, -1, dtype=np.int32)  # node_type[nid] valid for nid>=1
+    node_type[nodes["nid"].values] = nodes["ntype"].values
+
+    # Sanity checks: all edge endpoints must have known types
+    if np.any(node_type[df[src_col].values] < 0) or np.any(node_type[df[dst_col].values] < 0):
+        bad_src = df[src_col].values[node_type[df[src_col].values] < 0]
+        bad_dst = df[dst_col].values[node_type[df[dst_col].values] < 0]
+        raise ValueError(
+            f"Found nodes in edges not present in nodes file. "
+            f"Example bad src: {bad_src[:10]}, bad dst: {bad_dst[:10]}"
+        )
+
+    # type -> nodes pool
+    type_to_nodes = {}
+    for t in np.unique(nodes["ntype"].values):
+        pool = nodes.loc[nodes["ntype"] == t, "nid"].values.astype(np.int32)
+        type_to_nodes[int(t)] = pool
+
+    # relation -> allowed dst types (based on observed dst node types)
+    rel_to_dst_types = (
+        df.groupby(rel_col)[dst_col]
+          .apply(lambda dsts: np.unique(node_type[dsts.values]))
+          .to_dict()
+    )
+
+    np.save(os.path.join(out_dir, "node_type.npy"), node_type)
+
+    np.savez(
+        os.path.join(out_dir, "type_to_nodes.npz"),
+        **{str(k): v for k, v in type_to_nodes.items()}
+    )
+    np.savez(
+        os.path.join(out_dir, "rel_to_dst_types.npz"),
+        **{str(k): v.astype(np.int32) for k, v in rel_to_dst_types.items()}
+    )
+
 def preprocess(data_name, is_hetero=False, has_edge_feat=True):
     # Hetero format (THGL-Software):
     # u_id, i_id, ts, label, idx, rel_type, f1, f2, ...
@@ -127,6 +200,7 @@ def run(data_name, is_hetero=False, has_edge_feat=True):
     
 def convert_tgat_to_tspear(dataset_name):
     tgat_csv      = f'./DATA/{dataset_name}/original/ml_{dataset_name}.csv' # edge list
+    nodes_csv_path = f'./DATA/{dataset_name}/original/{dataset_name}_nodetype.csv' # node list
     edge_feat_npy = f'./DATA/{dataset_name}/original/ml_{dataset_name}.npy' # edge features
     node_feat_npy = f'./DATA/{dataset_name}/original/ml_{dataset_name}_node.npy' # node features
 
@@ -160,6 +234,17 @@ def convert_tgat_to_tspear(dataset_name):
 
     edges_out.to_csv(os.path.join(out_dir,'edges.csv'),
                      index=False) # now in Good format
+    if 'rel_type' in edges_out.columns:
+        build_type_artifacts(
+        edges_csv_path= os.path.join(out_dir,'edges.csv'),
+        nodes_csv_path= nodes_csv_path,
+        out_dir= out_dir,
+        node_id_col= "node_id",
+        node_type_col= "type",
+        src_col='src',
+        dst_col='dst',
+        rel_col='rel_type'
+        )
 
     all_nodes = pd.unique(pd.concat([df.u, df.i]))
     N = max(all_nodes) + 1 # total number of unique nodes + 1

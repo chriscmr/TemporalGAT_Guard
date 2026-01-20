@@ -77,7 +77,7 @@ def create_model_mailbox_sampler(node_feats, edge_feats, g, df,
     
     return model, mailbox, sampler
 
-def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, seed=0):
+def train_model_link_pred(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, seed=0):
     # node_feats node features tensor [N+1, d_n]
     # edge_feats tensor [E+1, d_e]
     # g dict the ext_full.pkl graph
@@ -86,15 +86,13 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler
     if 'combine_neighs' in train_param and train_param['combine_neighs']:
         combine_first = True
         # merge duplicate neighbors in the first layer
-
-    if args.data != "UCI" and args.data != "BITCOIN":
-        neg_link_sampler = NegLinkSamplerDST(df.dst.values)
+    #  sample negatives from all nodes
+    src_set = set(df.src.values)
+    dst_set = set(df.dst.values)
+    node_set = src_set.union(dst_set)
+    if model.is_hetero:
+        neg_link_sampler = NegLinkSamplerDST(node_set, rel_to_dst_types, type_to_nodes)
     else:
-        # UCI and Bitcoin have special ID distributions
-        #  sample negatives from all nodes
-        src_set = set(df.src.values)
-        dst_set = set(df.dst.values)
-        node_set = src_set.union(dst_set)
         neg_link_sampler = NegLinkSamplerDST(node_set)
 
     criterion = torch.nn.BCEWithLogitsLoss()
@@ -132,7 +130,11 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler
             # variable are rows.src, rows.dst, rows.time
             # each has shape [batch_size]
             t_tot_s = time.time()
-            root_nodes = np.concatenate([rows.src.values, rows.dst.values, neg_link_sampler.sample_v4(rows.dst.values, neg_samples=1)]).astype(np.int32)
+            if model.is_hetero:
+                negs = neg_link_sampler.sample_v4_by_rel(rows.rel_type.values, rows.dst.values, neg_samples=1)
+            else:
+                negs = neg_link_sampler.sample_v4(rows.dst.values, neg_samples=1)
+            root_nodes = np.concatenate([rows.src.values, rows.dst.values, negs]).astype(np.int32)
             # we want the embeddings of src, pos dst and neg dst
             ts = np.concatenate([rows.time.values, rows.time.values, rows.time.values]).astype(np.float32)
             # same timestamps for src, pos dst and neg dst
@@ -164,7 +166,7 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, mailbox, sampler
             ## Default Loss function
             optimizer.zero_grad()
             if args.robust == "none":
-                pred_pos, pred_neg = model(mfgs)
+                pred_pos, pred_neg = model(mfgs, neg_samples=1)
                 loss = criterion(pred_pos, torch.ones_like(pred_pos))
                 loss += criterion(pred_neg, torch.zeros_like(pred_neg))
             total_loss += float(loss) * train_param['batch_size']

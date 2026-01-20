@@ -127,10 +127,10 @@ def load_data(data, args):
     #     rand_edge_features = 128
     node_feats, edge_feats = load_feat(data, rand_edge_features, rand_node_features)
     # node_feats, edge_feats = None, None
-    g, df, edge_rel_type = load_graph(data) # graph dict and edge dataframe
+    g, df, edge_rel_type, rel_to_dst_types, type_to_nodes = load_graph(data) # graph dict and edge dataframe
     # if data == "UCI":
     #     edge_feats = torch.randn(len(df), 128)
-    return node_feats, edge_feats, g, df, edge_rel_type
+    return node_feats, edge_feats, g, df, edge_rel_type, rel_to_dst_types, type_to_nodes
 
 
 def load_feat(d, rand_de=0, rand_dn=0):
@@ -171,8 +171,13 @@ def load_graph(d):
     # g = np.load('DATA/{}/ext_full.npz'.format(d))
     with open(f'DATA/{d}/ext_full.pkl', 'rb') as f:
         g = pickle.load(f) # graph dict
+    type_to_nodes_npz = np.load(f"DATA/{d}/type_to_nodes.npz", allow_pickle=True)
+    type_to_nodes = {int(k): type_to_nodes_npz[k] for k in type_to_nodes_npz.files}
+
+    rel_to_dst_types_npz = np.load(f"DATA/{d}/rel_to_dst_types.npz", allow_pickle=True)
+    rel_to_dst_types = {int(k): rel_to_dst_types_npz[k] for k in rel_to_dst_types_npz.files}
     edge_rel_type = torch.from_numpy(df['rel_type'].values)
-    return g, df, edge_rel_type
+    return g, df, edge_rel_type, rel_to_dst_types, type_to_nodes
 
 
 def get_attacked_data_dir(args):
