@@ -33,13 +33,14 @@ def evaluation(args):
         set_random_seed(seed)
 
         if args.attack == "none":
-            node_feats, edge_feats, g, df = load_data(args.data, args)
+            node_feats, edge_feats, g, df, rel_to_dst_types, type_to_nodes  = load_data(args.data, args)
         else:
             node_feats, edge_feats, g, df = load_attacked_data(args.data, args)
-    
+
+        is_hetero = ("rel_type" in df.columns)
         ## Model train
         sample_param, memory_param, gnn_param, train_param = parse_config(args.model)
-        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param)
+        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param, is_hetero=is_hetero, args=args, seed=seed)
 
         best_epoch = 0
         best_ap = 0
@@ -70,8 +71,8 @@ def evaluation(args):
 
             if args.robust == "none" or args.robust == "svd":
                 if mailbox is not None:
-                    link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='train', seed=seed)
-                val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='val', evaluation=True, seed=seed)
+                    link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='train', seed=seed)
+                val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='val', evaluation=True, seed=seed)
 
             elif args.robust == "proposed" or args.robust == "cosine":
                 orig_g = copy.deepcopy(g)
@@ -106,9 +107,9 @@ def evaluation(args):
         model.load_state_dict(torch.load(best_model_path))
         model.eval()
         if args.robust == "none" or args.robust == "svd":
-            test_ap, test_auc, test_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, best_mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='test', evaluation=True, seed=seed)
+            test_ap, test_auc, test_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, best_mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='test', evaluation=True, seed=seed)
         elif args.robust == "proposed" or args.robust == "cosine":
-            test_ap, test_auc, test_hit, _, _ = robust_link_pred_evaluation_v2(node_feats, edge_feats, best_g, best_df, model, best_mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='test', evaluation=True, seed=seed, threshold=threshold)
+            test_ap, test_auc, test_hit, _, _ = robust_link_pred_evaluation_v2(node_feats, edge_feats, best_g, best_df, model, rel_to_dst_types, type_to_nodes, best_mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='test', evaluation=True, seed=seed, threshold=threshold)
 
         val_aps.append(best_ap)
         val_aucs.append(best_auc)

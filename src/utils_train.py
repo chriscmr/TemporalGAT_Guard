@@ -452,7 +452,7 @@ def remove_noise(g, df, remove_df):
     return g, df 
 
 @torch.no_grad()
-def link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='val', seed=None, evaluation=False):
+def link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='val', seed=None, evaluation=False):
     combine_first = False
     is_hetero = getattr(model, "is_hetero", False)
     edge_rel_type = None
@@ -461,13 +461,18 @@ def link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler,
         edge_rel_type = rel_per_event[g['eid'] - 1]
     if 'combine_neighs' in train_param and train_param['combine_neighs']:
         combine_first = True
-
-    if args.data != "UCI" and args.data != "BITCOIN":
-        neg_link_sampler = NegLinkSamplerDST(df.dst.values, seed=seed)
+    
+    src_set = set(df.src.values)
+    dst_set = set(df.dst.values)
+    node_set = src_set.union(dst_set)
+    if is_hetero:
+        neg_link_sampler = NegLinkSamplerDST(
+            node_set,
+            rel_to_dst_types=rel_to_dst_types,
+            type_to_nodes=type_to_nodes,
+            seed=seed
+        )
     else:
-        src_set = set(df.src.values)
-        dst_set = set(df.dst.values)
-        node_set = src_set.union(dst_set)
         neg_link_sampler = NegLinkSamplerDST(node_set, seed=seed)
 
     neg_samples = 1
@@ -498,7 +503,11 @@ def link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler,
                 root_nodes = np.concatenate([rows.src.values, rows.dst.values, neg_link_sampler.sample_v2(rows.dst.values, neg_samples)]).astype(np.int32)
                 ts = np.tile(rows.time.values, neg_samples + 2).astype(np.float32)
             else:
-                root_nodes = np.concatenate([rows.src.values, rows.dst.values, neg_link_sampler.sample_v4(rows.dst.values, neg_samples)]).astype(np.int32)
+                if is_hetero:
+                    negs = neg_link_sampler.sample_v4_by_rel(rows.rel_type.values, rows.dst.values, neg_samples=neg_samples)
+                else:
+                    negs = neg_link_sampler.sample_v4(rows.dst.values, neg_samples=neg_samples)
+                root_nodes = np.concatenate([rows.src.values, rows.dst.values, negs]).astype(np.int32)
                 ts = np.tile(rows.time.values, neg_samples + 2).astype(np.float32)
 
             if sampler is not None:
