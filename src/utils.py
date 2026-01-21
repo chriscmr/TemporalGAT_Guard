@@ -26,7 +26,7 @@ def set_random_seed(seed):
 def parse_argument():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, nargs='+', default=[0])
-    parser.add_argument("--data", type=str, default="WIKI")#proposed_TGN_0.3_True_0
+    parser.add_argument("--data", type=str, default="software/homo")#proposed_TGN_0.3_True_0
     parser.add_argument("--model", type=str, default="TGN")
     parser.add_argument("--gpu", type=int, default=0)
 
@@ -171,12 +171,16 @@ def load_graph(d):
     # g = np.load('DATA/{}/ext_full.npz'.format(d))
     with open(f'DATA/{d}/ext_full.pkl', 'rb') as f:
         g = pickle.load(f) # graph dict
-    type_to_nodes_npz = np.load(f"DATA/{d}/type_to_nodes.npz", allow_pickle=True)
-    type_to_nodes = {int(k): type_to_nodes_npz[k] for k in type_to_nodes_npz.files}
+    type_to_nodes = None
+    rel_to_dst_types = None
+    edge_rel_type = None
+    if ('rel_type' in df.columns):        
+        type_to_nodes_npz = np.load(f"DATA/{d}/type_to_nodes.npz", allow_pickle=True)
+        type_to_nodes = {int(k): type_to_nodes_npz[k] for k in type_to_nodes_npz.files}
 
-    rel_to_dst_types_npz = np.load(f"DATA/{d}/rel_to_dst_types.npz", allow_pickle=True)
-    rel_to_dst_types = {int(k): rel_to_dst_types_npz[k] for k in rel_to_dst_types_npz.files}
-    edge_rel_type = torch.from_numpy(df['rel_type'].values)
+        rel_to_dst_types_npz = np.load(f"DATA/{d}/rel_to_dst_types.npz", allow_pickle=True)
+        rel_to_dst_types = {int(k): rel_to_dst_types_npz[k] for k in rel_to_dst_types_npz.files}
+        edge_rel_type = torch.from_numpy(df['rel_type'].values)
     return g, df, edge_rel_type, rel_to_dst_types, type_to_nodes
 
 
@@ -372,10 +376,12 @@ def prepare_input(mfgs, node_feats, edge_feats, edge_rel_type, combine_first=Fal
                             idx = b.edata['ID'].cpu().long()
                         torch.index_select(edge_feats, 0, idx, out=efeat_buffs[i][:idx.shape[0]])
                         b.edata['f'] = efeat_buffs[i][:idx.shape[0]].cuda(non_blocking=True)
-                        b.edata['rel_type'] = edge_rel_type[idx].long().cuda(non_blocking=True)
+                        if edge_rel_type is not None:
+                            b.edata['rel_type'] = edge_rel_type[idx].long().cuda(non_blocking=True)
                         i += 1
                     else:
                         srch = edge_feats[b.edata['ID'].long().cpu()].float()
                         b.edata['f'] = srch.cuda()
-                        b.edata['rel_type'] = edge_rel_type[b.edata['ID'].long().cpu()].long().cuda()
+                        if edge_rel_type is not None:
+                            b.edata['rel_type'] = edge_rel_type[b.edata['ID'].long().cpu()].long().cuda()
     return mfgs

@@ -133,42 +133,24 @@ def preprocess(data_name, is_hetero=False, has_edge_feat=True):
     return df, feat
 
 
-def reindex(df, is_hetero=False):
-    if not is_hetero:
-        # no missing integers
-        assert(df.u.max() - df.u.min() + 1 == len(df.u.unique())) # n-p+1 :) number of element between max and min
-        assert(df.i.max() - df.i.min() + 1 == len(df.i.unique()))
-        
-        # If users from 0..U-1
-        # Then items start from U..U+I-1
-        # ensure no overlap in node IDs
-        upper_u = df.u.max() + 1
-        new_i = df.i + upper_u
-        
-        new_df = df.copy()
-        print(new_df.u.max())
-        print(new_df.i.max())
-        
-        new_df.i = new_i
-        new_df.u += 1 # users \in [1, U]
-        new_df.i += 1 # items \in [U+1, U+I]
-        new_df.idx += 1 # edge idx \in [1, E]
-        # total nodes = U + I
-        
-        print(new_df.u.max())
-        print(new_df.i.max())
-        
-        return new_df
-    else:
-        df2 = df.copy()
+def reindex(df, keep_ids=False):
+    df2 = df.copy()
 
-        # keep original node IDs exactly as they are
+    if keep_ids:
         df2['u'] = df2['u'] + 1
         df2['i'] = df2['i'] + 1
-        df2['idx'] = df2['idx'] +1 # no shift needed
-
-        # nothing else changes  
+        df2['idx'] = df2['idx'] + 1
         return df2
+
+    # old behavior (ONLY for true bipartite datasets)
+    assert(df.u.max() - df.u.min() + 1 == len(df.u.unique()))
+    assert(df.i.max() - df.i.min() + 1 == len(df.i.unique()))
+    upper_u = df.u.max() + 1
+    df2['i'] = df2['i'] + upper_u
+    df2['u'] = df2['u'] + 1
+    df2['i'] = df2['i'] + 1
+    df2['idx'] = df2['idx'] + 1
+    return df2
 
 
 
@@ -179,7 +161,7 @@ def run(data_name, is_hetero=False, has_edge_feat=True):
     OUT_NODE_FEAT = './DATA/{}/original/ml_{}_node.npy'.format(data_name, data_name)
     
     df, feat = preprocess(PATH,  is_hetero=is_hetero, has_edge_feat=has_edge_feat)
-    new_df = reindex(df, is_hetero=is_hetero)
+    new_df = reindex(df, keep_ids = True)
     
     print(feat.shape)
     # Adds a zero-vector feature for index 0 (the padding index)
@@ -208,8 +190,12 @@ def convert_tgat_to_tspear(dataset_name):
     edge_f  = np.load(edge_feat_npy)     # shape = [edges+1, feat_dim]
     node_f  = np.load(node_feat_npy)     # shape = [nodes+1, feat_dim]
 
-    out_dir = f'DATA/{dataset_name}'
-    os.makedirs(out_dir, exist_ok=True)
+    if 'rel_type' in df.columns:
+        out_dir = f'DATA/{dataset_name}/hetero'
+        os.makedirs(out_dir, exist_ok=True)
+    else:
+        out_dir = f'DATA/{dataset_name}/homo'
+        os.makedirs(out_dir, exist_ok=True)
 
     if 'rel_type' in df.columns:
         edges_out = df[['u','i','ts','rel_type']].copy()
@@ -352,5 +338,5 @@ def convert_tgat_to_tspear(dataset_name):
 
 if __name__ == "__main__":
     dataset_name = 'software'
-    run(dataset_name, is_hetero=True, has_edge_feat=False)
+    run(dataset_name, is_hetero=False, has_edge_feat=False)
     convert_tgat_to_tspear(dataset_name)

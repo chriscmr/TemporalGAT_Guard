@@ -40,7 +40,7 @@ def evaluation(args):
         is_hetero = ("rel_type" in df.columns)
         ## Model train
         sample_param, memory_param, gnn_param, train_param = parse_config(args.model)
-        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param, is_hetero=is_hetero, args=args, seed=seed)
+        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param, is_hetero=is_hetero)
 
         best_epoch = 0
         best_ap = 0

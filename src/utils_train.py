@@ -196,14 +196,14 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, rel_to_dst_types
         torch.save(model.state_dict(), model_path)
 
         t_val_s = time.time()
-        val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='val', evaluation=False)        
+        val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='val', evaluation=False)        
         time_val = time.time() - t_val_s
         # args.logger.debug(f'Epoch: {e}, train_loss: {total_loss:.1f}, total_time: {(time_tot + time_val):.2f}s (sample: {time_sample:.2f}s, prep: {time_prep:.2f}s, val: {time_val:.2f}s)')
         args.logger.debug(f'Epoch: {e}, train_loss: {total_loss:.1f}, val_ap: {val_ap:.4f}, val_auc: {val_auc:.4f}, total_time: {(time_tot + time_val):.2f}s (sample: {time_sample:.2f}s, prep: {time_prep:.2f}s, val: {time_val:.2f}s)')
 
     model.eval()
     # val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='val', evaluation=False)
-    test_ap, test_auc, test_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='test', evaluation=False)
+    test_ap, test_auc, test_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='test', evaluation=False)
     torch.cuda.empty_cache()
     
     return val_ap, val_auc, val_hit, test_ap, test_auc, test_hit

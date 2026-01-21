@@ -43,7 +43,7 @@ def train_main(args):
         ## Model train
         is_hetero = ("rel_type" in df.columns)
         sample_param, memory_param, gnn_param, train_param = parse_config(args.model)
-        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param, is_hetero = is_hetero, args=args, seed=seed, edge_rel_type=edge_rel_type, rel_to_dst_types=rel_to_dst_types, type_to_nodes=type_to_nodes)
+        model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param, is_hetero = is_hetero)
 
         if args.robust == "none" or args.robust == "svd":
             val_ap, val_auc, val_hit, test_ap, test_auc, test_hit = train_model_link_pred(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, seed=seed)
