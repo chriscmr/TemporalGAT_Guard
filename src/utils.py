@@ -177,12 +177,11 @@ def load_graph(d):
     if ('rel_type' in df.columns):        
         type_to_nodes_npz = np.load(f"DATA/{d}/type_to_nodes.npz", allow_pickle=True)
         type_to_nodes = {int(k): type_to_nodes_npz[k] for k in type_to_nodes_npz.files}
-
+    
         rel_to_dst_types_npz = np.load(f"DATA/{d}/rel_to_dst_types.npz", allow_pickle=True)
         rel_to_dst_types = {int(k): rel_to_dst_types_npz[k] for k in rel_to_dst_types_npz.files}
         edge_rel_type = torch.from_numpy(df['rel_type'].values)
     return g, df, edge_rel_type, rel_to_dst_types, type_to_nodes
-
 
 def get_attacked_data_dir(args):
     if args.attack == "proposed":
