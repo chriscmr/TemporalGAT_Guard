@@ -136,7 +136,7 @@ class MailBox():
         with torch.no_grad():
             num_true_edges = root_nodes.shape[0] // (neg_samples + 2)
             if self.is_hetero:
-                rel_emb = rel_emb[:num_true_edges * 2]
+                rel_emb = rel_emb[:num_true_edges]
             else:
                 rel_emb = None
             memory = memory.to(self.device)

@@ -182,11 +182,9 @@ def train_model_link_pred(node_feats, edge_feats, g, df, model, rel_to_dst_types
                     block = to_dgl_blocks(ret, sample_param['history'], reverse=True)[0][0]
                 rel_emb = None
                 if is_hetero:
-                    # One rel_id per TRUE edge in this batch (not for negatives)
-                    rel_ids = rows['rel_type'].to_numpy().astype(np.int64)     # shape [E]
-                    rel_ids = np.tile(rel_ids, 2)                              # shape [2E] for [src,dst]
+                    rel_ids = rows['rel_type'].to_numpy().astype(np.int64)          # [E]                    # shape [2E] for [src,dst]
                     rel_ids = torch.from_numpy(rel_ids).to(model.mail_rel_emb.weight.device)
-                    rel_emb = model.mail_rel_emb(rel_ids)                      # [2E, dim_mail_rel]
+                    rel_emb = model.mail_rel_emb(rel_ids)                      # [E, dim_mail_rel]
                 mailbox.update_mailbox(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, ts, mem_edge_feats, block, rel_emb = rel_emb)
                 mailbox.update_memory(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, model.memory_updater.last_updated_ts)            
             time_prep += time.time() - t_prep_s
@@ -556,11 +554,9 @@ def link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types,
                     block = to_dgl_blocks(ret, sample_param['history'], reverse=True)[0][0]
                 rel_emb = None
                 if is_hetero:
-                    # one rel_id per TRUE edge (E), then tile to match [src, dst] length 2E
                     rel_ids = rows['rel_type'].to_numpy().astype(np.int64)   # [E]
-                    rel_ids = np.tile(rel_ids, 2)                            # [2E]
                     rel_ids = torch.from_numpy(rel_ids).to(model.mail_rel_emb.weight.device)
-                    rel_emb = model.mail_rel_emb(rel_ids)                    # [2E, dim_mail_rel]
+                    rel_emb = model.mail_rel_emb(rel_ids)                    # [E, dim_mail_rel]
                 mailbox.update_mailbox(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, ts, mem_edge_feats, block, rel_emb=rel_emb, neg_samples=neg_samples)
                 mailbox.update_memory(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, model.memory_updater.last_updated_ts, neg_samples=neg_samples)
 

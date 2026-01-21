@@ -26,7 +26,7 @@ def set_random_seed(seed):
 def parse_argument():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, nargs='+', default=[0])
-    parser.add_argument("--data", type=str, default="software/homo")#proposed_TGN_0.3_True_0
+    parser.add_argument("--data", type=str, default="software/hetero")#proposed_TGN_0.3_True_0
     parser.add_argument("--model", type=str, default="TGN")
     parser.add_argument("--gpu", type=int, default=0)
 
@@ -383,5 +383,5 @@ def prepare_input(mfgs, node_feats, edge_feats, edge_rel_type, combine_first=Fal
                         srch = edge_feats[b.edata['ID'].long().cpu()].float()
                         b.edata['f'] = srch.cuda()
                         if edge_rel_type is not None:
-                            b.edata['rel_type'] = edge_rel_type[b.edata['ID'].long().cpu()].long().cuda()
+                            b.edata['rel_type'] = torch.from_numpy(edge_rel_type[b.edata['ID'].long().cpu().numpy()]).long().cuda()
     return mfgs
