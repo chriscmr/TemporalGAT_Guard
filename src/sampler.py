@@ -13,6 +13,7 @@ from sampler_core import ParallelSampler, TemporalGraphBlock
 #export CXX=$CONDA_PREFIX/bin/x86_64-conda-linux-gnu-g++
 # conda install -c conda-forge gcc_linux-64 gxx_linux-64
 # python setup.py build_ext --inplace
+# export PYTHONPATH=/bigwork/nhuatoum/Eff_TGAT/src:${PYTHONPATH:-}
 class NegLinkSampler:
 
     def __init__(self, num_nodes):
