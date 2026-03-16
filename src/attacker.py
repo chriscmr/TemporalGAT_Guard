@@ -40,6 +40,11 @@ class TemporalAttack:
         edge_feats = None if orig_edge_feats is None else orig_edge_feats.clone().detach()
         g = copy.deepcopy(orig_g)
         df = orig_df.copy()
+        is_hetero = ('rel_type' in df.columns)
+        edge_rel_type = None
+        if is_hetero:
+            rel_per_event = df['rel_type'].to_numpy(np.int32)
+            edge_rel_type = rel_per_event[g['eid'] - 1]
         df['adv'] = np.zeros(len(df)).astype(np.int32)
 
 
@@ -53,8 +58,11 @@ class TemporalAttack:
         if args.attack == "proposed":
             ####################### Load surrogate model #######################
             sample_param, memory_param, gnn_param, train_param = parse_config(args.surrogate)
-            model, mailbox, sampler = create_model_mailbox_sampler(node_feats, edge_feats, g, df, sample_param, memory_param, gnn_param, train_param)
-
+            model, mailbox, sampler = create_model_mailbox_sampler(
+                node_feats, edge_feats, g, df,
+                sample_param, memory_param, gnn_param, train_param,
+                is_hetero=is_hetero
+            )
             seed = seed if seed is not None else 0
             self.args.model_path = f'./MODEL/AAAI/NON_ROBUST/{args.data}/none/{args.surrogate}_seed_{seed}_best_from51.pt'
             if not os.path.isfile(self.args.model_path):
@@ -95,7 +103,10 @@ class TemporalAttack:
         tot_num_ptb = 0
 
         for i_df, x_df in enumerate([train_df, valid_df, test_df]):
-            ptb_ts, ptb_src, ptb_dst = np.array([]), np.array([]), np.array([])
+            ptb_ts = np.array([], dtype=np.float32)
+            ptb_src = np.array([], dtype=np.int32)
+            ptb_dst = np.array([], dtype=np.int32)
+            ptb_rel = np.array([], dtype=np.int32) if is_hetero else None
             ptb_edge_feats = np.array([]).reshape(-1, edge_feats.shape[1]) if edge_feats is not None else None
 
             for i_rows, rows in x_df.groupby(x_df.index // args.batch_size):
@@ -190,7 +201,7 @@ class TemporalAttack:
                             mfgs = to_dgl_blocks(ret, sample_param['history'])
                         else:
                             mfgs = node_to_dgl_blocks(root_nodes, ts)
-                        mfgs = prepare_input(mfgs, node_feats, edge_feats)
+                        mfgs = prepare_input(mfgs, node_feats, edge_feats, edge_rel_type)
                         if mailbox is not None:
                             mailbox.prep_input_mails(mfgs[0])
                         with torch.no_grad():
@@ -277,7 +288,7 @@ class TemporalAttack:
                         mfgs = to_dgl_blocks(ret, sample_param['history'])
                     else:
                         mfgs = node_to_dgl_blocks(root_nodes, ts)
-                    mfgs = prepare_input(mfgs, node_feats, edge_feats)
+                    mfgs = prepare_input(mfgs, node_feats, edge_feats, edge_rel_type)
                     if mailbox is not None:
                         mailbox.prep_input_mails(mfgs[0])
                     with torch.no_grad():
@@ -289,7 +300,19 @@ class TemporalAttack:
                         block = None
                         if memory_param['deliver_to'] == 'neighbors':
                             block = to_dgl_blocks(ret, sample_param['history'], reverse=True)[0][0]
-                        mailbox.update_mailbox(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, ts, mem_edge_feats, block, neg_samples=0)
+                        rel_emb = None
+                        if is_hetero:
+                            rel_ids = rows['rel_type'].to_numpy().astype(np.int64)   # [E]
+                            rel_ids = torch.from_numpy(rel_ids).to(model.mail_rel_emb.weight.device)
+                            rel_emb = model.mail_rel_emb(rel_ids)                    # [E, dim_mail_rel]
+
+                        mailbox.update_mailbox(
+                            model.memory_updater.last_updated_nid,
+                            model.memory_updater.last_updated_memory,
+                            root_nodes, ts, mem_edge_feats, block,
+                            rel_emb=rel_emb,
+                            neg_samples=0
+                        )
                         mailbox.update_memory(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, model.memory_updater.last_updated_ts, neg_samples=0)
 
                     row_src_set = set(rows.src)
