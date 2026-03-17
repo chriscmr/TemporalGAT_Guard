@@ -41,9 +41,11 @@ def build_type_artifacts(
 
     nodes["nid"] = nodes["nid"].astype(np.int64)
 
-    max_nid = int(max(df[src_col].max(), df[dst_col].max(), nodes["nid"].max()))
-    node_type = np.full(max_nid + 1, -1, dtype=np.int32)  # node_type[nid] valid for nid>=1
-    node_type[nodes["nid"].values] = nodes["ntype"].values
+    max_nid = int(max(df[src_col].max(), df[dst_col].max()))
+    node_type = np.full(max_nid + 1, -1, dtype=np.int32)
+
+    nodes_in_graph = nodes[nodes["nid"] <= max_nid].copy()
+    node_type[nodes_in_graph["nid"].values] = nodes_in_graph["ntype"].values
 
     # Sanity checks: all edge endpoints must have known types
     if np.any(node_type[df[src_col].values] < 0) or np.any(node_type[df[dst_col].values] < 0):
@@ -54,19 +56,34 @@ def build_type_artifacts(
             f"Example bad src: {bad_src[:10]}, bad dst: {bad_dst[:10]}"
         )
 
-    # type -> nodes pool
-    type_to_nodes = {}
-    for t in np.unique(nodes["ntype"].values):
-        pool = nodes.loc[nodes["ntype"] == t, "nid"].values.astype(np.int32)
-        type_to_nodes[int(t)] = pool
+    # only keep nodes that actually appear in the edge file
+    active_nodes = set(df[src_col].values).union(set(df[dst_col].values))
+    nodes_active = nodes[nodes["nid"].isin(active_nodes)].copy()
 
+    # type -> nodes pool (ACTIVE GRAPH NODES ONLY)
+    type_to_nodes = {}
+    for t in np.unique(nodes_active["ntype"].values):
+        pool = nodes_active.loc[nodes_active["ntype"] == t, "nid"].values.astype(np.int32)
+        type_to_nodes[int(t)] = pool
+    
+    max_graph_node = int(max(df[src_col].max(), df[dst_col].max()))
+    max_pool_node = max(int(pool.max()) for pool in type_to_nodes.values() if len(pool) > 0)
+
+    print("max_graph_node =", max_graph_node)
+    print("max_pool_node  =", max_pool_node)
+
+    assert max_pool_node <= max_graph_node, \
+        "type_to_nodes contains nodes outside the graph built from edges.csv"
+    
     # relation -> allowed dst types (based on observed dst node types)
     rel_to_dst_types = (
         df.groupby(rel_col)[dst_col]
           .apply(lambda dsts: np.unique(node_type[dsts.values]))
           .to_dict()
     )
+    print("rel_to_dst",rel_to_dst_types)
 
+    print("node_type", node_type)
     np.save(os.path.join(out_dir, "node_type.npy"), node_type)
 
     np.savez(
@@ -260,11 +277,18 @@ def convert_tgat_to_tspear(dataset_name):
     ext_full_indices = [[] for _ in range(N)] # neighbor node IDs
     ext_full_ts      = [[] for _ in range(N)]
     ext_full_eid     = [[] for _ in range(N)] # edge IDs
+    ext_full_rel_type = [[] for _ in range(N)] if 'rel_type' in df.columns else None
+    eid_to_rel = None
+    if 'rel_type' in df.columns:
+        eid_to_rel = dict(zip(df['idx'].astype(int).values, df['rel_type'].astype(int).values))
+    
     for u in range(N):
         for v, t, eid in raw_adj[u]:
             ext_full_indices[u].append(v)
             ext_full_ts     [u].append(t)
             ext_full_eid    [u].append(eid)
+            if ext_full_rel_type is not None:
+                ext_full_rel_type[u].append(eid_to_rel[int(eid)])
     # ext_full looks like:
     # | Node | Neighbor IDs | Time       | Edge IDs |
     # | 1    | [2, 3]       | [1.0, 2.0] | [0, 1]   |
@@ -295,7 +319,9 @@ def convert_tgat_to_tspear(dataset_name):
     indices = np.concatenate(ext_full_indices).astype(np.int64)# [num_edges*2]
     ts      = np.concatenate(ext_full_ts).astype(np.float32) # [num_edges*2]
     eid     = np.concatenate(ext_full_eid).astype(np.int64) # [num_edges*2]
-
+    rel_type = None
+    if ext_full_rel_type is not None:
+        rel_type = np.concatenate(ext_full_rel_type).astype(np.int32)  # [num_edges*2]
     # for example
     # | Node | Neighbors | Count | Cumulative offset |
     # | 0    | —         | 0     | 0                 |
@@ -324,6 +350,9 @@ def convert_tgat_to_tspear(dataset_name):
         'ts':               ts,
         'eid':              eid
     }
+    if ext_full_rel_type is not None:
+        g['ext_full_rel_type'] = ext_full_rel_type
+        g['rel_type'] = rel_type
 
     with open(os.path.join(out_dir,'ext_full.pkl'),'wb') as f:
         pickle.dump(g, f) # save graph structure
@@ -337,6 +366,6 @@ def convert_tgat_to_tspear(dataset_name):
     print("Converted TGAT files to TSPEAR format.")
 
 if __name__ == "__main__":
-    dataset_name = 'github'
-    run(dataset_name, is_hetero=True, has_edge_feat=False)
+    dataset_name = 'forum'
+    run(dataset_name, is_hetero=False, has_edge_feat=False)
     convert_tgat_to_tspear(dataset_name)

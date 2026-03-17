@@ -40,11 +40,18 @@ class TemporalAttack:
         edge_feats = None if orig_edge_feats is None else orig_edge_feats.clone().detach()
         g = copy.deepcopy(orig_g)
         df = orig_df.copy()
-        is_hetero = ('rel_type' in df.columns)
+
+        is_hetero_graph = ('rel_type' in df.columns)
+
+        # whether to run the hetero version of the attack
+        use_hetero_attack = bool(getattr(args, "hetero_attack", False) and is_hetero_graph and args.attack == "proposed")
+
+        # CSR-aligned relation labels for sampled edges
         edge_rel_type = None
-        if is_hetero:
+        if is_hetero_graph:
             rel_per_event = df['rel_type'].to_numpy(np.int32)
             edge_rel_type = rel_per_event[g['eid'] - 1]
+
         df['adv'] = np.zeros(len(df)).astype(np.int32)
 
 
@@ -61,8 +68,9 @@ class TemporalAttack:
             model, mailbox, sampler = create_model_mailbox_sampler(
                 node_feats, edge_feats, g, df,
                 sample_param, memory_param, gnn_param, train_param,
-                is_hetero=is_hetero
+                is_hetero=is_hetero_graph
             )
+
             seed = seed if seed is not None else 0
             self.args.model_path = f'./MODEL/AAAI/NON_ROBUST/{args.data}/none/{args.surrogate}_seed_{seed}_best_from51.pt'
             if not os.path.isfile(self.args.model_path):
@@ -103,10 +111,8 @@ class TemporalAttack:
         tot_num_ptb = 0
 
         for i_df, x_df in enumerate([train_df, valid_df, test_df]):
-            ptb_ts = np.array([], dtype=np.float32)
-            ptb_src = np.array([], dtype=np.int32)
-            ptb_dst = np.array([], dtype=np.int32)
-            ptb_rel = np.array([], dtype=np.int32) if is_hetero else None
+            ptb_ts, ptb_src, ptb_dst = np.array([]), np.array([]), np.array([])
+            ptb_rel = np.array([], dtype=np.int32) if use_hetero_attack else None
             ptb_edge_feats = np.array([]).reshape(-1, edge_feats.shape[1]) if edge_feats is not None else None
 
             for i_rows, rows in x_df.groupby(x_df.index // args.batch_size):
@@ -125,8 +131,9 @@ class TemporalAttack:
                     ############ edge features (common for all attacks) ############
                     ################################################################
                     t_batch_start = time.time()
+                    ptb_rel_batch = None
                     if edge_feats is not None:
-                        kde.fit(edge_feats[prev_rows.index.values])#['Unnamed: 0']
+                        kde.fit(edge_feats[prev_rows['Unnamed: 0'].values])
                         ptb_edge_feats_batch = np.round(kde.sample(num_ptb_batch), 4)
 
                     ################################################################
@@ -237,10 +244,17 @@ class TemporalAttack:
                             ptb_src_batch = row_src_array[row_cand[idx_batch]]
                             ptb_dst_batch = row_dst_array[col_cand[idx_batch]]
                             assert num_ptb_batch == len(ptb_src_batch) and num_ptb_batch == len(ptb_dst_batch)
-
+                    if use_hetero_attack:
+                        rel_pool = rows['rel_type'].to_numpy().astype(np.int32)
+                        if len(rel_pool) == 0:
+                            ptb_rel_batch = np.array([], dtype=np.int32)
+                        else:
+                            ptb_rel_batch = np.random.choice(rel_pool, size=len(ptb_src_batch), replace=True).astype(np.int32)
                     ptb_ts = np.concatenate((ptb_ts, ptb_ts_batch))
                     ptb_src = np.concatenate((ptb_src, ptb_src_batch))
                     ptb_dst = np.concatenate((ptb_dst, ptb_dst_batch))
+                    if use_hetero_attack:
+                        ptb_rel = np.concatenate((ptb_rel, ptb_rel_batch))
                     ptb_edge_feats = np.concatenate((ptb_edge_feats, ptb_edge_feats_batch)) if edge_feats is not None else None
                     num_src_id = len(set(ptb_src_batch)) 
                     num_dst_id = len(set(ptb_dst_batch))
@@ -295,16 +309,16 @@ class TemporalAttack:
                         _, _ = model(mfgs, neg_samples=0)
 
                     if mailbox is not None:
-                        eid = rows.index.values#['Unnamed: 0']
+                        eid = rows['Unnamed: 0'].values
                         mem_edge_feats = edge_feats[eid] if edge_feats is not None else None
                         block = None
                         if memory_param['deliver_to'] == 'neighbors':
                             block = to_dgl_blocks(ret, sample_param['history'], reverse=True)[0][0]
                         rel_emb = None
-                        if is_hetero:
-                            rel_ids = rows['rel_type'].to_numpy().astype(np.int64)   # [E]
+                        if is_hetero_graph:
+                            rel_ids = rows['rel_type'].to_numpy().astype(np.int64)   # one rel id per true edge
                             rel_ids = torch.from_numpy(rel_ids).to(model.mail_rel_emb.weight.device)
-                            rel_emb = model.mail_rel_emb(rel_ids)                    # [E, dim_mail_rel]
+                            rel_emb = model.mail_rel_emb(rel_ids)                    # shape [E, dim_mail_rel]
 
                         mailbox.update_mailbox(
                             model.memory_updater.last_updated_nid,
@@ -313,7 +327,12 @@ class TemporalAttack:
                             rel_emb=rel_emb,
                             neg_samples=0
                         )
-                        mailbox.update_memory(model.memory_updater.last_updated_nid, model.memory_updater.last_updated_memory, root_nodes, model.memory_updater.last_updated_ts, neg_samples=0)
+                        mailbox.update_memory(
+                            model.memory_updater.last_updated_nid,
+                            model.memory_updater.last_updated_memory,
+                            root_nodes, model.memory_updater.last_updated_ts,
+                            neg_samples=0
+                        )
 
                     row_src_set = set(rows.src)
                     row_dst_set = set(rows.dst)
@@ -336,6 +355,9 @@ class TemporalAttack:
                 'ext_roll': i_df,
                 'adv': 1
             })
+            if use_hetero_attack:
+                ptb_dict['rel_type'] = ptb_rel
+            ptb_df = pd.DataFrame(ptb_dict)
             ptb_edge_feats = torch.from_numpy(ptb_edge_feats).to(dtype=torch.float32) if ptb_edge_feats is not None else None
             node_feats, edge_feats, g, df = self.add_perturbations(node_feats, edge_feats, g, df, ptb_edge_feats, ptb_df)
         
@@ -343,11 +365,11 @@ class TemporalAttack:
         print(f'>> [{args.attack} attack] ptb_rate: {ptb_rate}, tot_num_ptb: {tot_num_ptb}, elapsed: {t_attack_elapsed:.4f}s')
         return node_feats, edge_feats, g, df
 
-    def add_perturbations(self, node_feats, edge_feats, g, df, ptb_edge_feats, ptb_df, verbose=False):
-        df = df = pd.concat([df, ptb_df], ignore_index=True)#df.append(ptb_df)
+    def add_perturbations(self, node_feats, edge_feats, g, df, ptb_edge_feats, ptb_df, verbose=false):
+        df = df.append(ptb_df)
         df = df.sort_values('time')
-        edge_feats = torch.vstack((edge_feats, ptb_edge_feats)) if ptb_edge_feats is not None else edge_feats
-        df = df.reset_index(drop=True)
+        edge_feats = torch.vstack((edge_feats, ptb_edge_feats)) if ptb_edge_feats is not none else edge_feats
+        df = df.reset_index(drop=true)
 
         num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1
         ext_full_indptr = np.zeros(num_nodes + 1, dtype=np.int32)
@@ -358,7 +380,7 @@ class TemporalAttack:
         for i, row in tqdm(ptb_df.iterrows(), total=len(ptb_df), disable=not verbose):
             src = int(row['src'])
             dst = int(row['dst'])
-            idx = int(row.name)#['Unnamed: 0']
+            idx = int(row['Unnamed: 0'])
             ext_full_indices[src].append(dst)
             ext_full_ts[src].append(row['time'])
             ext_full_eid[src].append(idx)
@@ -398,4 +420,3 @@ class TemporalAttack:
         g['ts'] = np_ext_full_ts
         g['eid'] = np_ext_full_eid
         return node_feats, edge_feats, g, df
-
