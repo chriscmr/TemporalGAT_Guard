@@ -35,7 +35,7 @@ def evaluation(args):
         if args.attack == "none":
             node_feats, edge_feats, g, df, edge_rel_type, rel_to_dst_types, type_to_nodes  = load_data(args.data, args)
         else:
-            node_feats, edge_feats, g, df = load_attacked_data(args.data, args)
+            node_feats, edge_feats, g, df, edge_rel_type, rel_to_dst_types, type_to_nodes = load_attacked_data(args.data, args)
 
         is_hetero = ("rel_type" in df.columns)
         ## Model train

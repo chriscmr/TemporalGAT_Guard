@@ -41,6 +41,8 @@ class TemporalAttack:
         g = copy.deepcopy(orig_g)
         df = orig_df.copy()
 
+        if 'Unnamed: 0' not in df.columns:
+            df['Unnamed: 0'] = np.arange(1, len(df) + 1, dtype=np.int64)
         is_hetero_graph = ('rel_type' in df.columns)
 
         # whether to run the hetero version of the attack
@@ -56,9 +58,9 @@ class TemporalAttack:
 
 
         t_attack_start = time.time()
-        train_df = orig_df[orig_df['ext_roll'] == 0]
-        valid_df = orig_df[orig_df['ext_roll'] == 1]
-        test_df = orig_df[orig_df['ext_roll'] == 2]
+        train_df = df[df['ext_roll'] == 0]
+        valid_df = df[df['ext_roll'] == 1]
+        test_df = df[df['ext_roll'] == 2]
 
         kde = KernelDensity(bandwidth=0.1, kernel='gaussian')
 
@@ -111,7 +113,7 @@ class TemporalAttack:
         tot_num_ptb = 0
 
         for i_df, x_df in enumerate([train_df, valid_df, test_df]):
-            ptb_ts, ptb_src, ptb_dst = np.array([]), np.array([]), np.array([])
+            ptb_ts, ptb_src, ptb_dst = np.array([], dtype=np.float32), np.array([], dtype=np.int32), np.array([], dtype=np.int32)
             ptb_rel = np.array([], dtype=np.int32) if use_hetero_attack else None
             ptb_edge_feats = np.array([]).reshape(-1, edge_feats.shape[1]) if edge_feats is not None else None
 
@@ -122,7 +124,7 @@ class TemporalAttack:
                     ################################################################
                     num_ptb_batch = int(len(rows) * ptb_rate)
                     kde.fit(rows.time.values.reshape(-1, 1))
-                    ptb_ts_batch = np.trunc(kde.sample(num_ptb_batch).squeeze())
+                    ptb_ts_batch = np.trunc(kde.sample(num_ptb_batch).reshape(-1)).astype(np.float32)
                     ptb_ts_batch = np.clip(ptb_ts_batch, rows.time.iloc[0], rows.time.iloc[-1])
 
 
@@ -132,6 +134,7 @@ class TemporalAttack:
                     ################################################################
                     t_batch_start = time.time()
                     ptb_rel_batch = None
+                    ptb_edge_feats_batch = None
                     if edge_feats is not None:
                         kde.fit(edge_feats[prev_rows['Unnamed: 0'].values])
                         ptb_edge_feats_batch = np.round(kde.sample(num_ptb_batch), 4)
@@ -197,65 +200,199 @@ class TemporalAttack:
                 
                     elif args.attack == "proposed":
                         ######################## Edge scores #######################
-                        src_dst_pair = np.array(list(itertools.product(row_src_array, row_dst_array))).astype(np.int32)
-                        root_nodes = src_dst_pair.T.reshape(1, -1).squeeze()
-                        # ts = rows.time.iloc[0] * np.ones_like(root_nodes).astype(np.float32)
-                        ts = ptb_ts_batch.min() * np.ones_like(root_nodes).astype(np.float32)
-                        if sampler is not None:
-                            sampler.sample(root_nodes, ts)
-                            ret = sampler.get_ret()
-                        if gnn_param['arch'] != 'identity':
-                            mfgs = to_dgl_blocks(ret, sample_param['history'])
-                        else:
-                            mfgs = node_to_dgl_blocks(root_nodes, ts)
-                        mfgs = prepare_input(mfgs, node_feats, edge_feats, edge_rel_type)
-                        if mailbox is not None:
-                            mailbox.prep_input_mails(mfgs[0])
-                        with torch.no_grad():
-                            src_dst_score, _ = model(mfgs, neg_samples=0)
+                        if not use_hetero_attack:
+                            # ---------- original/global TSPEAR ----------
+                            src_dst_pair = np.array(list(itertools.product(row_src_array, row_dst_array))).astype(np.int32)
+                            root_nodes = src_dst_pair.T.reshape(1, -1).squeeze()
+                            ts = ptb_ts_batch.min() * np.ones_like(root_nodes).astype(np.float32)
 
-                        num_hungarian = 0
-                        if not args.use_hungarian:
-                            idx_batch = src_dst_score.squeeze().topk(num_ptb_batch, largest=False).indices.cpu().numpy()
-                            ptb_src_batch = src_dst_pair[idx_batch][:, 0]
-                            ptb_dst_batch = src_dst_pair[idx_batch][:, 1]
-                        else:
-                            cost = src_dst_score.reshape(len(row_src_set), len(row_dst_set)).cpu().numpy()
-                            for elem in inter: ## Remove self-interactions from candidates
-                                cost[np.where(row_src_array == elem)[0], np.where(row_dst_array == elem)[0]] = 999999
+                            if sampler is not None:
+                                sampler.sample(root_nodes, ts)
+                                ret = sampler.get_ret()
 
-                            cost1 = cost.copy()
-                            row_cand, col_cand = np.array([]).astype(np.int32), np.array([]).astype(np.int32)
-                            while len(row_cand) < num_ptb_batch:
-                                row_ind, col_ind = linear_sum_assignment(cost)
-                                row_cand = np.concatenate((row_cand, row_ind)) 
-                                col_cand = np.concatenate((col_cand, col_ind))
-                                cost[row_ind, col_ind] = 999999
-                                num_hungarian += 1
+                            if gnn_param['arch'] != 'identity':
+                                mfgs = to_dgl_blocks(ret, sample_param['history'])
+                            else:
+                                mfgs = node_to_dgl_blocks(root_nodes, ts)
 
-                            for i_h in range(args.xpool):
-                                row_ind, col_ind = linear_sum_assignment(cost)
-                                row_cand = np.concatenate((row_cand, row_ind)) 
-                                col_cand = np.concatenate((col_cand, col_ind))
-                                cost[row_ind, col_ind] = 999999
-                                num_hungarian += 1
+                            mfgs = prepare_input(mfgs, node_feats, edge_feats, edge_rel_type)
+                            if mailbox is not None:
+                                mailbox.prep_input_mails(mfgs[0])
 
-                            idx_batch = cost1[row_cand, col_cand].argsort()[:num_ptb_batch]
-                            ptb_src_batch = row_src_array[row_cand[idx_batch]]
-                            ptb_dst_batch = row_dst_array[col_cand[idx_batch]]
+                            with torch.no_grad():
+                                src_dst_score, _ = model(mfgs, neg_samples=0)
+
+                            num_hungarian = 0
+                            if not args.use_hungarian:
+                                idx_batch = src_dst_score.squeeze().topk(num_ptb_batch, largest=False).indices.cpu().numpy()
+                                ptb_src_batch = src_dst_pair[idx_batch][:, 0]
+                                ptb_dst_batch = src_dst_pair[idx_batch][:, 1]
+                            else:
+                                cost = src_dst_score.reshape(len(row_src_set), len(row_dst_set)).cpu().numpy()
+                                for elem in inter:
+                                    cost[np.where(row_src_array == elem)[0], np.where(row_dst_array == elem)[0]] = 999999
+
+                                cost1 = cost.copy()
+                                row_cand, col_cand = np.array([]).astype(np.int32), np.array([]).astype(np.int32)
+                                while len(row_cand) < num_ptb_batch:
+                                    row_ind, col_ind = linear_sum_assignment(cost)
+                                    row_cand = np.concatenate((row_cand, row_ind))
+                                    col_cand = np.concatenate((col_cand, col_ind))
+                                    cost[row_ind, col_ind] = 999999
+                                    num_hungarian += 1
+
+                                for i_h in range(args.xpool):
+                                    row_ind, col_ind = linear_sum_assignment(cost)
+                                    row_cand = np.concatenate((row_cand, row_ind))
+                                    col_cand = np.concatenate((col_cand, col_ind))
+                                    cost[row_ind, col_ind] = 999999
+                                    num_hungarian += 1
+
+                                idx_batch = cost1[row_cand, col_cand].argsort()[:num_ptb_batch]
+                                ptb_src_batch = row_src_array[row_cand[idx_batch]]
+                                ptb_dst_batch = row_dst_array[col_cand[idx_batch]]
+
                             assert num_ptb_batch == len(ptb_src_batch) and num_ptb_batch == len(ptb_dst_batch)
-                    if use_hetero_attack:
-                        rel_pool = rows['rel_type'].to_numpy().astype(np.int32)
-                        if len(rel_pool) == 0:
-                            ptb_rel_batch = np.array([], dtype=np.int32)
+
                         else:
-                            ptb_rel_batch = np.random.choice(rel_pool, size=len(ptb_src_batch), replace=True).astype(np.int32)
+                            # ---------- Extension A: relation-by-relation TSPEAR ----------
+                            ptb_src_parts = []
+                            ptb_dst_parts = []
+                            ptb_ts_parts = []
+                            ptb_rel_parts = []
+                            ptb_edge_feat_parts = [] if edge_feats is not None else None
+                            num_hungarian = 0
+
+                            rel_groups = list(rows.groupby("rel_type"))
+                            if len(rel_groups) == 0:
+                                ptb_src_batch = np.array([], dtype=np.int32)
+                                ptb_dst_batch = np.array([], dtype=np.int32)
+                                ptb_ts_batch = np.array([], dtype=np.float32)
+                                ptb_rel_batch = np.array([], dtype=np.int32)
+                                if edge_feats is not None:
+                                    ptb_edge_feats_batch = np.empty((0, edge_feats.shape[1]), dtype=np.float32)
+                            else:
+                                # allocate perturbation budget proportionally to relation frequency in this batch
+                                rel_sizes = np.array([len(rel_rows) for _, rel_rows in rel_groups], dtype=np.float64)
+                                rel_budget_float = rel_sizes / rel_sizes.sum() * num_ptb_batch
+                                rel_budget = np.floor(rel_budget_float).astype(int)
+                                remainder = num_ptb_batch - rel_budget.sum()
+                                if remainder > 0:
+                                    order = np.argsort(-(rel_budget_float - rel_budget))
+                                    rel_budget[order[:remainder]] += 1
+
+                                for (rel_val, rel_rows), num_ptb_rel in zip(rel_groups, rel_budget):
+                                    if num_ptb_rel <= 0:
+                                        continue
+
+                                    # ----- timestamps from this relation bucket
+                                    kde.fit(rel_rows.time.values.reshape(-1, 1))
+                                    ptb_ts_rel = np.trunc(kde.sample(num_ptb_rel).reshape(-1)).astype(np.float32)
+                                    ptb_ts_rel = np.clip(ptb_ts_rel, rel_rows.time.iloc[0], rel_rows.time.iloc[-1]).astype(np.float32)
+
+                                    # ----- edge features from previous rows of same relation (fallback to prev_rows)
+                                    if edge_feats is not None:
+                                        prev_rel_rows = prev_rows[prev_rows['rel_type'] == rel_val]
+                                        if len(prev_rel_rows) > 0:
+                                            kde.fit(edge_feats[prev_rel_rows['Unnamed: 0'].values])
+                                        else:
+                                            kde.fit(edge_feats[prev_rows['Unnamed: 0'].values])
+                                        ptb_edge_feats_rel = np.round(kde.sample(num_ptb_rel), 4).astype(np.float32)
+
+                                    # ----- candidate pools inside this relation bucket
+                                    rel_src_set = set(rel_rows.src.values)
+                                    rel_dst_set = set(rel_rows.dst.values)
+
+                                    if args.data == "UCI" or args.data == "BITCOIN":
+                                        rel_src_set = rel_src_set.union(rel_dst_set)
+                                        rel_dst_set = rel_dst_set.union(rel_src_set)
+
+                                    rel_src_array = np.array(list(rel_src_set)).astype(np.int32)
+                                    rel_dst_array = np.array(list(rel_dst_set)).astype(np.int32)
+                                    rel_inter = rel_src_set.intersection(rel_dst_set)
+
+                                    if len(rel_src_array) == 0 or len(rel_dst_array) == 0:
+                                        continue
+
+                                    src_dst_pair = np.array(list(itertools.product(rel_src_array, rel_dst_array))).astype(np.int32)
+                                    root_nodes = src_dst_pair.T.reshape(1, -1).squeeze()
+                                    ts = ptb_ts_rel.min() * np.ones_like(root_nodes).astype(np.float32)
+
+                                    if sampler is not None:
+                                        sampler.sample(root_nodes, ts)
+                                        ret = sampler.get_ret()
+
+                                    if gnn_param['arch'] != 'identity':
+                                        mfgs = to_dgl_blocks(ret, sample_param['history'])
+                                    else:
+                                        mfgs = node_to_dgl_blocks(root_nodes, ts)
+
+                                    mfgs = prepare_input(mfgs, node_feats, edge_feats, edge_rel_type)
+                                    if mailbox is not None:
+                                        mailbox.prep_input_mails(mfgs[0])
+
+                                    with torch.no_grad():
+                                        src_dst_score, _ = model(mfgs, neg_samples=0)
+
+                                    if not args.use_hungarian:
+                                        idx_rel = src_dst_score.squeeze().topk(num_ptb_rel, largest=False).indices.cpu().numpy()
+                                        ptb_src_rel = src_dst_pair[idx_rel][:, 0]
+                                        ptb_dst_rel = src_dst_pair[idx_rel][:, 1]
+                                    else:
+                                        cost = src_dst_score.reshape(len(rel_src_array), len(rel_dst_array)).cpu().numpy()
+                                        for elem in rel_inter:
+                                            cost[np.where(rel_src_array == elem)[0], np.where(rel_dst_array == elem)[0]] = 999999
+
+                                        cost1 = cost.copy()
+                                        row_cand, col_cand = np.array([]).astype(np.int32), np.array([]).astype(np.int32)
+
+                                        while len(row_cand) < num_ptb_rel:
+                                            row_ind, col_ind = linear_sum_assignment(cost)
+                                            row_cand = np.concatenate((row_cand, row_ind))
+                                            col_cand = np.concatenate((col_cand, col_ind))
+                                            cost[row_ind, col_ind] = 999999
+                                            num_hungarian += 1
+
+                                        for i_h in range(args.xpool):
+                                            row_ind, col_ind = linear_sum_assignment(cost)
+                                            row_cand = np.concatenate((row_cand, row_ind))
+                                            col_cand = np.concatenate((col_cand, col_ind))
+                                            cost[row_ind, col_ind] = 999999
+                                            num_hungarian += 1
+
+                                        idx_rel = cost1[row_cand, col_cand].argsort()[:num_ptb_rel]
+                                        ptb_src_rel = rel_src_array[row_cand[idx_rel]]
+                                        ptb_dst_rel = rel_dst_array[col_cand[idx_rel]]
+
+                                    ptb_rel_rel = np.full(len(ptb_src_rel), rel_val, dtype=np.int32)
+
+                                    ptb_src_parts.append(ptb_src_rel)
+                                    ptb_dst_parts.append(ptb_dst_rel)
+                                    ptb_ts_parts.append(ptb_ts_rel[:len(ptb_src_rel)])
+                                    ptb_rel_parts.append(ptb_rel_rel)
+
+                                    if edge_feats is not None:
+                                        ptb_edge_feat_parts.append(ptb_edge_feats_rel[:len(ptb_src_rel)])
+
+                                ptb_src_batch = np.concatenate(ptb_src_parts) if len(ptb_src_parts) > 0 else np.array([], dtype=np.int32)
+                                ptb_dst_batch = np.concatenate(ptb_dst_parts) if len(ptb_dst_parts) > 0 else np.array([], dtype=np.int32)
+                                ptb_ts_batch = np.concatenate(ptb_ts_parts) if len(ptb_ts_parts) > 0 else np.array([], dtype=np.float32)
+                                ptb_rel_batch = np.concatenate(ptb_rel_parts) if len(ptb_rel_parts) > 0 else np.array([], dtype=np.int32)
+
+                                if edge_feats is not None:
+                                    ptb_edge_feats_batch = (
+                                        np.concatenate(ptb_edge_feat_parts)
+                                        if len(ptb_edge_feat_parts) > 0
+                                        else np.empty((0, edge_feats.shape[1]), dtype=np.float32)
+                                    )
+                    
                     ptb_ts = np.concatenate((ptb_ts, ptb_ts_batch))
                     ptb_src = np.concatenate((ptb_src, ptb_src_batch))
                     ptb_dst = np.concatenate((ptb_dst, ptb_dst_batch))
-                    if use_hetero_attack:
+                    if use_hetero_attack and ptb_rel_batch is not None:
                         ptb_rel = np.concatenate((ptb_rel, ptb_rel_batch))
-                    ptb_edge_feats = np.concatenate((ptb_edge_feats, ptb_edge_feats_batch)) if edge_feats is not None else None
+                    if edge_feats is not None:
+                        ptb_edge_feats = np.concatenate((ptb_edge_feats, ptb_edge_feats_batch))
                     num_src_id = len(set(ptb_src_batch)) 
                     num_dst_id = len(set(ptb_dst_batch))
                     t_batch_elapsed = time.time() - t_batch_start
@@ -346,15 +483,15 @@ class TemporalAttack:
 
             num_ptb = len(ptb_ts)
             tot_num_ptb += num_ptb 
-            ptb_df = pd.DataFrame({
-                'Unnamed: 0': np.arange(len(df), len(df) + num_ptb), 
+            ptb_dict = {
+                'Unnamed: 0': np.arange(len(df) + 1, len(df) + num_ptb + 1), 
                 'src': ptb_src, 
                 'dst': ptb_dst, 
                 'time': ptb_ts, 
                 'int_roll': 0, 
                 'ext_roll': i_df,
                 'adv': 1
-            })
+            }
             if use_hetero_attack:
                 ptb_dict['rel_type'] = ptb_rel
             ptb_df = pd.DataFrame(ptb_dict)
@@ -365,58 +502,75 @@ class TemporalAttack:
         print(f'>> [{args.attack} attack] ptb_rate: {ptb_rate}, tot_num_ptb: {tot_num_ptb}, elapsed: {t_attack_elapsed:.4f}s')
         return node_feats, edge_feats, g, df
 
-    def add_perturbations(self, node_feats, edge_feats, g, df, ptb_edge_feats, ptb_df, verbose=false):
-        df = df.append(ptb_df)
+    def add_perturbations(self, node_feats, edge_feats, g, df, ptb_edge_feats, ptb_df, verbose=False):
+        df = pd.concat([df, ptb_df], ignore_index=True)
         df = df.sort_values('time')
-        edge_feats = torch.vstack((edge_feats, ptb_edge_feats)) if ptb_edge_feats is not none else edge_feats
-        df = df.reset_index(drop=true)
+        edge_feats = torch.vstack((edge_feats, ptb_edge_feats)) if ptb_edge_feats is not None else edge_feats
+        df = df.reset_index(drop=True)
 
         num_nodes = max(int(df['src'].max()), int(df['dst'].max())) + 1
         ext_full_indptr = np.zeros(num_nodes + 1, dtype=np.int32)
         ext_full_indices = g['ext_full_indices']
         ext_full_ts = g['ext_full_ts']
         ext_full_eid = g['ext_full_eid']
+        ext_full_rel_type = g['ext_full_rel_type'] if 'ext_full_rel_type' in g else None
 
         for i, row in tqdm(ptb_df.iterrows(), total=len(ptb_df), disable=not verbose):
             src = int(row['src'])
             dst = int(row['dst'])
             idx = int(row['Unnamed: 0'])
+
             ext_full_indices[src].append(dst)
             ext_full_ts[src].append(row['time'])
             ext_full_eid[src].append(idx)
+
             ext_full_indices[dst].append(src)
             ext_full_ts[dst].append(row['time'])
             ext_full_eid[dst].append(idx)
 
+            if ext_full_rel_type is not None and 'rel_type' in ptb_df.columns:
+                r = int(row['rel_type'])
+                ext_full_rel_type[src].append(r)
+                ext_full_rel_type[dst].append(r)
+
         for i in tqdm(range(num_nodes), disable=True):
             ext_full_indptr[i + 1] = ext_full_indptr[i] + len(ext_full_indices[i])
         
-        def ext_sort(i, indices, t, eid):
+        def ext_sort(i, indices, t, eid, rel = None):
             idx = np.argsort(t[i])
             indices[i] = np.array(indices[i])[idx].tolist()
             t[i] = np.array(t[i])[idx].tolist()
             eid[i] = np.array(eid[i])[idx].tolist()
+            if rel is not None:
+                rel[i] = np.array(rel[i])[idx].tolist()
         
         for i in tqdm(range(num_nodes), disable=True):
-            ext_sort(i, ext_full_indices, ext_full_ts, ext_full_eid)
+            ext_sort(i, ext_full_indices, ext_full_ts, ext_full_eid, ext_full_rel_type)
 
         np_ext_full_indices = np.array(list(itertools.chain(*ext_full_indices)))
         np_ext_full_ts = np.array(list(itertools.chain(*ext_full_ts)))
         np_ext_full_eid = np.array(list(itertools.chain(*ext_full_eid)))
+        np_ext_full_rel_type = np.array(list(itertools.chain(*ext_full_rel_type))) if ext_full_rel_type is not None else None
 
-        def tsort(i, indptr, indices, t, eid):
+        def tsort(i, indptr, indices, t, eid, rel=None):
             beg = indptr[i]
             end = indptr[i + 1]
             sidx = np.argsort(t[beg:end])
             indices[beg:end] = indices[beg:end][sidx]
             t[beg:end] = t[beg:end][sidx]
             eid[beg:end] = eid[beg:end][sidx]
+            if rel is not None:
+                rel[beg:end] = rel[beg:end][sidx]
 
         for i in tqdm(range(ext_full_indptr.shape[0] - 1), disable=True):
-            tsort(i, ext_full_indptr, np_ext_full_indices, np_ext_full_ts, np_ext_full_eid)
+            tsort(i, ext_full_indptr, np_ext_full_indices, np_ext_full_ts, np_ext_full_eid, np_ext_full_rel_type)
 
         g['indptr'] = ext_full_indptr
         g['indices'] = np_ext_full_indices
         g['ts'] = np_ext_full_ts
         g['eid'] = np_ext_full_eid
+
+        if np_ext_full_rel_type is not None:
+            g['rel_type'] = np_ext_full_rel_type
+            g['ext_full_rel_type'] = ext_full_rel_type
         return node_feats, edge_feats, g, df

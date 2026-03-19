@@ -25,14 +25,14 @@ def set_random_seed(seed):
 
 def parse_argument():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--seeds", type=int, nargs='+', default=[0])
-    parser.add_argument("--data", type=str, default="myket/homo")#proposed_TGN_0.3_True_0
+    parser.add_argument("--seeds", type=int, nargs='+', default=[1])
+    parser.add_argument("--data", type=str, default="myket/hetero")#proposed_TGN_0.3_True_0
     parser.add_argument("--model", type=str, default="TGN")
     parser.add_argument("--gpu", type=int, default=0)
 
-    parser.add_argument("--attack", type=str, default="none", choices=["none", "random", "proposed", "degree", "pagerank", "preference", "jaccard"])#none if training
-    parser.add_argument("--hetero_attack", type=str, default="False")
-    parser.add_argument("--surrogate", type=str, default="SURROGATE")#leave to SURROGATE if training
+    parser.add_argument("--attack", type=str, default="proposed", choices=["none", "random", "proposed", "degree", "pagerank", "preference", "jaccard"])#none if training
+    parser.add_argument("--hetero_attack", default=True)
+    parser.add_argument("--surrogate", type=str, default="TGN")#leave to SURROGATE if training
     parser.add_argument("--ptb_rate", type=float, default=0.3)
     parser.add_argument("--use_hungarian", action="store_true", default=True)
     parser.add_argument("--xpool", type=int, default=0)
@@ -202,10 +202,10 @@ def load_attacked_data(data, args):
     rand_node_features = 0 if not hasattr(args, 'rand_node_features') else args.rand_node_features
     node_feats, edge_feats = load_attacked_feat(data, args, rand_edge_features, rand_node_features)
     # node_feats, edge_feats = None, None 
-    g, df, edge_rel_type = load_attacked_graph(data, args)
+    g, df, edge_rel_type, rel_to_dst_types, type_to_nodes = load_attacked_graph(data, args)
     # if data == "UCI":
     #     edge_feats = torch.randn(len(df), 128)
-    return node_feats, edge_feats, g, df, edge_rel_type
+    return node_feats, edge_feats, g, df, edge_rel_type, rel_to_dst_types, type_to_nodes
 
 
 def load_attacked_feat(d, args, rand_de=0, rand_dn=0):
@@ -215,7 +215,7 @@ def load_attacked_feat(d, args, rand_de=0, rand_dn=0):
         node_feats = torch.load(f'{data_dir}/node_features.pt')
         if node_feats.dtype == torch.bool:
             node_feats = node_feats.type(torch.float32)
-    edge_feats = None
+    edge_feats = None    
     if os.path.exists(f'{data_dir}/edge_features.pt'):
         edge_feats = torch.load(f'{data_dir}/edge_features.pt')
         if edge_feats.dtype == torch.bool:
@@ -242,8 +242,17 @@ def load_attacked_graph(d, args):
     df = pd.read_csv(f'{data_dir}/edges.csv')
     with open(f'{data_dir}/ext_full.pkl', 'rb') as f:
         g = pickle.load(f)
-    edge_rel_type = torch.from_numpy(df['rel_type'].values)
-    return g, df, edge_rel_type
+    edge_rel_type = None
+    type_to_nodes = None
+    rel_to_dst_types = None
+    if ('rel_type' in df.columns):        
+        type_to_nodes_npz = np.load(f"{data_dir}/type_to_nodes.npz", allow_pickle=True)
+        type_to_nodes = {int(k): type_to_nodes_npz[k] for k in type_to_nodes_npz.files}
+    
+        rel_to_dst_types_npz = np.load(f"{data_dir}/rel_to_dst_types.npz", allow_pickle=True)
+        rel_to_dst_types = {int(k): rel_to_dst_types_npz[k] for k in rel_to_dst_types_npz.files}
+        edge_rel_type = torch.from_numpy(df['rel_type'].values)
+    return g, df, edge_rel_type, rel_to_dst_types, type_to_nodes
 
 
 def parse_config(model):

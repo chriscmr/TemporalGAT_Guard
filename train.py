@@ -38,7 +38,7 @@ def train_main(args):
         if args.attack == "none":
             node_feats, edge_feats, g, df, edge_rel_type, rel_to_dst_types, type_to_nodes = load_data(args.data, args)
         else:
-            node_feats, edge_feats, g, df = load_attacked_data(args.data, args)
+            node_feats, edge_feats, g, df, edge_rel_type, rel_to_dst_types, type_to_nodes = load_attacked_data(args.data, args)
         
         ## Model train
         is_hetero = ("rel_type" in df.columns)
@@ -82,8 +82,8 @@ def attack_and_save(args):
 
     data_dir = get_attacked_data_dir(args)
     Path(data_dir).mkdir(parents=True, exist_ok=True)
-    node_feats, edge_feats, g, df = load_data(args.data, args)
-    seed = 0
+    node_feats, edge_feats, g, df, edge_rel_type, rel_to_dst_types, type_to_nodes = load_data(args.data, args)
+    seed = 0 #to change
     set_random_seed(seed)
 
     if os.path.exists(f'{data_dir}/ext_full.pkl') and os.path.exists(f'{data_dir}/edges.csv'):
@@ -111,6 +111,18 @@ def attack_and_save(args):
     with open(f'{data_dir}/ext_full.pkl', 'wb') as f:
         pickle.dump(ptb_g, f)
     ptb_df.to_csv(f'{data_dir}/edges.csv', index=False)
+
+    # save hetero artifacts if present
+    if rel_to_dst_types is not None and type_to_nodes is not None:
+        np.savez(
+            f'{data_dir}/rel_to_dst_types.npz',
+            **{str(k): v for k, v in rel_to_dst_types.items()}
+        )
+        np.savez(
+            f'{data_dir}/type_to_nodes.npz',
+            **{str(k): v for k, v in type_to_nodes.items()}
+        )
+
     print(f'[Complete] Save attacked dataset at {data_dir}, seed={seed}.\n')
 
 
