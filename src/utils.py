@@ -26,7 +26,7 @@ def set_random_seed(seed):
 def parse_argument():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, nargs='+', default=[1])
-    parser.add_argument("--data", type=str, default="myket/hetero")#proposed_TGN_0.3_True_0
+    parser.add_argument("--data", type=str, default="forum/homo")#proposed_TGN_0.3_True_0
     parser.add_argument("--model", type=str, default="TGN")
     parser.add_argument("--gpu", type=int, default=0)
 
@@ -385,12 +385,25 @@ def prepare_input(mfgs, node_feats, edge_feats, edge_rel_type, combine_first=Fal
                             idx = b.edata['ID'].cpu().long()
                         torch.index_select(edge_feats, 0, idx, out=efeat_buffs[i][:idx.shape[0]])
                         b.edata['f'] = efeat_buffs[i][:idx.shape[0]].cuda(non_blocking=True)
-                        if edge_rel_type is not None:
-                            b.edata['rel_type'] = edge_rel_type[idx].long().cuda(non_blocking=True)
+                        # if edge_rel_type is not None:
+                        #     b.edata['rel_type'] = edge_rel_type[idx].long().cuda(non_blocking=True)
                         i += 1
                     else:
                         srch = edge_feats[b.edata['ID'].long().cpu()].float()
                         b.edata['f'] = srch.cuda()
-                        if edge_rel_type is not None:
-                            b.edata['rel_type'] = torch.from_numpy(edge_rel_type[b.edata['ID'].long().cpu().numpy()]).long().cuda()
+                        # if edge_rel_type is not None:
+                        #     b.edata['rel_type'] = torch.from_numpy(edge_rel_type[b.edata['ID'].long().cpu().numpy()]).long().cuda()
+    # relation type (independent of edge_feats)
+    # -------------------------
+    if edge_rel_type is not None:
+        is_numpy = isinstance(edge_rel_type, np.ndarray)
+        for mfg in mfgs:
+            for b in mfg:
+                if b.num_src_nodes() > b.num_dst_nodes():
+                    idx_cpu = b.edata['ID'].long().cpu()
+                    if is_numpy:
+                        rel = torch.from_numpy(edge_rel_type[idx_cpu.numpy()]).long()
+                    else:
+                        rel = edge_rel_type[idx_cpu].long().cpu()
+                    b.edata['rel_type'] = rel.cuda(non_blocking=True) if pinned else rel.cuda()
     return mfgs
