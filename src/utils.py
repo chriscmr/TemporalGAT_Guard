@@ -26,13 +26,13 @@ def set_random_seed(seed):
 def parse_argument():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", type=int, nargs='+', default=[1])
-    parser.add_argument("--data", type=str, default="forum/homo")#proposed_TGN_0.3_True_0
+    parser.add_argument("--data", type=str, default="forum/hetero")#proposed_TGN_0.3_True_0
     parser.add_argument("--model", type=str, default="TGN")
     parser.add_argument("--gpu", type=int, default=0)
 
-    parser.add_argument("--attack", type=str, default="proposed", choices=["none", "random", "proposed", "degree", "pagerank", "preference", "jaccard"])#none if training
+    parser.add_argument("--attack", type=str, default="none", choices=["none", "random", "proposed", "degree", "pagerank", "preference", "jaccard"])#none if training
     parser.add_argument("--hetero_attack", default=True)
-    parser.add_argument("--surrogate", type=str, default="TGN")#leave to SURROGATE if training
+    parser.add_argument("--surrogate", type=str, default="SURROGATE")#leave to SURROGATE if training or TGN otherwise
     parser.add_argument("--ptb_rate", type=float, default=0.3)
     parser.add_argument("--use_hungarian", action="store_true", default=True)
     parser.add_argument("--xpool", type=int, default=0)

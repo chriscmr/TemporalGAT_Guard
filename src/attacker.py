@@ -45,15 +45,18 @@ class TemporalAttack:
             df['Unnamed: 0'] = np.arange(1, len(df) + 1, dtype=np.int64)
         is_hetero_graph = ('rel_type' in df.columns)
 
-        # whether to run the hetero version of the attack
-        use_hetero_attack = bool(getattr(args, "hetero_attack", False) and is_hetero_graph and args.attack == "proposed")
+        hetero_flag = getattr(args, "hetero_attack", False)
+        if isinstance(hetero_flag, str):
+            hetero_flag = hetero_flag.lower() == "true"
 
+        use_hetero_attack = bool(hetero_flag and is_hetero_graph and args.attack == "proposed")
+        
         # CSR-aligned relation labels for sampled edges
         edge_rel_type = None
         if is_hetero_graph:
             rel_per_event = df['rel_type'].to_numpy(np.int32)
             edge_rel_type = rel_per_event[g['eid'] - 1]
-
+        
         df['adv'] = np.zeros(len(df)).astype(np.int32)
 
 

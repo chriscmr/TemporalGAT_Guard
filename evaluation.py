@@ -69,7 +69,8 @@ def evaluation(args):
                 model.memory_updater.last_updated_ts = None
                 model.memory_updater.last_updated_memory = None
 
-            if args.robust == "none" or args.robust == "svd":
+            do_validation = (e == 1) or (e % 5 == 0)
+            if (args.robust == "none" or args.robust == "svd") and do_validation:
                 if mailbox is not None:
                     link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='train', seed=seed)
                 val_ap, val_auc, val_hit = link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=args.eval_neg_samples, mode='val', evaluation=True, seed=seed)
@@ -83,7 +84,7 @@ def evaluation(args):
 
             t_eval_e = time.time() - t_eval_s
 
-            if val_auc >= best_auc:
+            if val_auc > best_auc:
                 best_epoch = e
                 best_ap = val_ap
                 best_auc = val_auc
