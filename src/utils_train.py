@@ -537,7 +537,8 @@ def link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types,
                 pred_neg = pred_neg[neg_mask]
                 y_pred = y_pred[pos_neg_mask]
                 y_true = y_true[pos_neg_mask]
-
+            if len(y_true) == 0 or len(y_pred) == 0:
+                continue
             aps.append(average_precision_score(y_true, y_pred))
             if neg_samples > 1:
                 ranks = torch.sum(pred_pos.squeeze() < pred_neg.squeeze().reshape(neg_samples, -1), dim=0) + 1

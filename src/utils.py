@@ -33,7 +33,7 @@ def parse_argument():
     parser.add_argument("--attack", type=str, default="none", choices=["none", "random", "proposed", "degree", "pagerank", "preference", "jaccard"])#none if training
     parser.add_argument("--hetero_attack", default=True)
     parser.add_argument("--surrogate", type=str, default="SURROGATE")#leave to SURROGATE if training or TGN otherwise
-    parser.add_argument("--ptb_rate", type=float, default=0.3)
+    parser.add_argument("--ptb_rate", type=float, default=0.1)
     parser.add_argument("--use_hungarian", action="store_true", default=True)
     parser.add_argument("--xpool", type=int, default=0)
     parser.add_argument("--batch_size", type=int, default=600)

@@ -69,7 +69,7 @@ def evaluation(args):
                 model.memory_updater.last_updated_ts = None
                 model.memory_updater.last_updated_memory = None
 
-            do_validation = (e == 1) or (e % 5 == 0)
+            do_validation = (e == 1) or (e % 10 == 0)
             if (args.robust == "none" or args.robust == "svd") and do_validation:
                 if mailbox is not None:
                     link_pred_evaluation(node_feats, edge_feats, g, df, model, rel_to_dst_types, type_to_nodes, mailbox, sampler, sample_param, memory_param, gnn_param, train_param, args, negs=1, mode='train', seed=seed)

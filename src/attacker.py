@@ -51,7 +51,29 @@ class TemporalAttack:
 
         use_hetero_attack = bool(hetero_flag and is_hetero_graph and args.attack == "proposed")
         
-        # CSR-aligned relation labels for sampled edges
+        node_type = None
+        type_to_nodes = None
+        rel_to_src_types = None
+        rel_to_dst_types = None
+
+        if use_hetero_attack:
+            base_dir = f"DATA/{args.data}"
+            node_type_path = f"{base_dir}/node_type.npy"
+            type_to_nodes_path = f"{base_dir}/type_to_nodes.npz"
+            node_type = np.load(node_type_path)
+            type_to_nodes_npz = np.load(type_to_nodes_path, allow_pickle=True)
+            type_to_nodes = {int(k): type_to_nodes_npz[k].astype(np.int32) for k in type_to_nodes_npz.files}
+
+            rel_to_src_types = (
+                df.groupby("rel_type")["src"]
+                .apply(lambda srcs: np.unique(node_type[srcs.values]))
+                .to_dict()
+            )
+            rel_to_dst_types = (
+                df.groupby("rel_type")["dst"]
+                .apply(lambda dsts: np.unique(node_type[dsts.values]))
+                .to_dict()
+            )
         edge_rel_type = None
         if is_hetero_graph:
             rel_per_event = df['rel_type'].to_numpy(np.int32)
@@ -116,6 +138,9 @@ class TemporalAttack:
         tot_num_ptb = 0
 
         for i_df, x_df in enumerate([train_df, valid_df, test_df]):
+            seen_src_set = set()
+            seen_dst_set = set()
+            
             ptb_ts, ptb_src, ptb_dst = np.array([], dtype=np.float32), np.array([], dtype=np.int32), np.array([], dtype=np.int32)
             ptb_rel = np.array([], dtype=np.int32) if use_hetero_attack else None
             ptb_edge_feats = np.array([]).reshape(-1, edge_feats.shape[1]) if edge_feats is not None else None
@@ -126,6 +151,8 @@ class TemporalAttack:
                     ############## timestamp (common for all attacks) ##############
                     ################################################################
                     num_ptb_batch = int(len(rows) * ptb_rate)
+                    if num_ptb_batch <= 0:
+                        continue
                     kde.fit(rows.time.values.reshape(-1, 1))
                     ptb_ts_batch = np.trunc(kde.sample(num_ptb_batch).reshape(-1)).astype(np.float32)
                     ptb_ts_batch = np.clip(ptb_ts_batch, rows.time.iloc[0], rows.time.iloc[-1])
@@ -258,7 +285,7 @@ class TemporalAttack:
                             assert num_ptb_batch == len(ptb_src_batch) and num_ptb_batch == len(ptb_dst_batch)
 
                         else:
-                            # ---------- Extension A: relation-by-relation TSPEAR ----------
+                            # ---------- Extension: relation-by-relation TSPEAR ----------
                             ptb_src_parts = []
                             ptb_dst_parts = []
                             ptb_ts_parts = []
@@ -301,18 +328,70 @@ class TemporalAttack:
                                         else:
                                             kde.fit(edge_feats[prev_rows['Unnamed: 0'].values])
                                         ptb_edge_feats_rel = np.round(kde.sample(num_ptb_rel), 4).astype(np.float32)
+                                    # ----- type-compatible candidate pools inside this relation bucket
+                                    src_type_list = rel_to_src_types[int(rel_val)]
+                                    dst_type_list = rel_to_dst_types[int(rel_val)]
 
-                                    # ----- candidate pools inside this relation bucket
-                                    rel_src_set = set(rel_rows.src.values)
-                                    rel_dst_set = set(rel_rows.dst.values)
+                                    src_type_nodes = []
+                                    for t in src_type_list:
+                                        t = int(t)
+                                        if t in type_to_nodes:
+                                            src_type_nodes.append(type_to_nodes[t])
 
-                                    if args.data == "UCI" or args.data == "BITCOIN":
-                                        rel_src_set = rel_src_set.union(rel_dst_set)
-                                        rel_dst_set = rel_dst_set.union(rel_src_set)
+                                    dst_type_nodes = []
+                                    for t in dst_type_list:
+                                        t = int(t)
+                                        if t in type_to_nodes:
+                                            dst_type_nodes.append(type_to_nodes[t])
 
-                                    rel_src_array = np.array(list(rel_src_set)).astype(np.int32)
-                                    rel_dst_array = np.array(list(rel_dst_set)).astype(np.int32)
-                                    rel_inter = rel_src_set.intersection(rel_dst_set)
+                                    if len(src_type_nodes) > 0:
+                                        rel_src_pool = np.unique(np.concatenate(src_type_nodes)).astype(np.int32)
+                                    else:
+                                        rel_src_pool = np.unique(rel_rows.src.values).astype(np.int32)
+
+                                    if len(dst_type_nodes) > 0:
+                                        rel_dst_pool = np.unique(np.concatenate(dst_type_nodes)).astype(np.int32)
+                                    else:
+                                        rel_dst_pool = np.unique(rel_rows.dst.values).astype(np.int32)
+
+                                    # keep attack causal: only use nodes already seen earlier in this split
+                                    if len(seen_src_set) > 0:
+                                        rel_src_array = np.array(
+                                            sorted(set(rel_src_pool).intersection(seen_src_set)),
+                                            dtype=np.int32
+                                        )
+                                    else:
+                                        rel_src_array = np.unique(rel_rows.src.values).astype(np.int32)
+
+                                    if len(seen_dst_set) > 0:
+                                        rel_dst_array = np.array(
+                                            sorted(set(rel_dst_pool).intersection(seen_dst_set)),
+                                            dtype=np.int32
+                                        )
+                                    else:
+                                        rel_dst_array = np.unique(rel_rows.dst.values).astype(np.int32)
+
+                                    # fallback if the filtered pools are empty
+                                    if len(rel_src_array) == 0:
+                                        rel_src_array = np.unique(rel_rows.src.values).astype(np.int32)
+                                    if len(rel_dst_array) == 0:
+                                        rel_dst_array = np.unique(rel_rows.dst.values).astype(np.int32)
+
+                                    # optional candidate cap for speed
+                                    max_src_cands = getattr(args, "max_src_cands", 200)
+                                    max_dst_cands = getattr(args, "max_dst_cands", 200)
+
+                                    if len(rel_src_array) > max_src_cands:
+                                        rel_src_array = np.random.choice(
+                                            rel_src_array, size=max_src_cands, replace=False
+                                        ).astype(np.int32)
+
+                                    if len(rel_dst_array) > max_dst_cands:
+                                        rel_dst_array = np.random.choice(
+                                            rel_dst_array, size=max_dst_cands, replace=False
+                                        ).astype(np.int32)
+
+                                    rel_inter = set(rel_src_array).intersection(set(rel_dst_array))
 
                                     if len(rel_src_array) == 0 or len(rel_dst_array) == 0:
                                         continue
@@ -410,6 +489,8 @@ class TemporalAttack:
                 ################### Save previous batch info ###################
                 ################################################################
                 prev_rows = rows
+                seen_src_set.update(rows.src.values.tolist())
+                seen_dst_set.update(rows.dst.values.tolist())
                 if args.attack == "random":
                     row_src_set = set(rows.src)
                     row_dst_set = set(rows.dst)
@@ -500,6 +581,9 @@ class TemporalAttack:
             ptb_df = pd.DataFrame(ptb_dict)
             ptb_edge_feats = torch.from_numpy(ptb_edge_feats).to(dtype=torch.float32) if ptb_edge_feats is not None else None
             node_feats, edge_feats, g, df = self.add_perturbations(node_feats, edge_feats, g, df, ptb_edge_feats, ptb_df)
+            if is_hetero_graph:
+                rel_per_event = df['rel_type'].to_numpy(np.int32)
+                edge_rel_type = rel_per_event[g['eid'] - 1]
         
         t_attack_elapsed = time.time() - t_attack_start
         print(f'>> [{args.attack} attack] ptb_rate: {ptb_rate}, tot_num_ptb: {tot_num_ptb}, elapsed: {t_attack_elapsed:.4f}s')
@@ -551,7 +635,7 @@ class TemporalAttack:
             ext_sort(i, ext_full_indices, ext_full_ts, ext_full_eid, ext_full_rel_type)
 
         np_ext_full_indices = np.array(list(itertools.chain(*ext_full_indices)))
-        np_ext_full_ts = np.array(list(itertools.chain(*ext_full_ts)))
+        np_ext_full_ts = np.array(list(itertools.chain(*ext_full_ts))) 
         np_ext_full_eid = np.array(list(itertools.chain(*ext_full_eid)))
         np_ext_full_rel_type = np.array(list(itertools.chain(*ext_full_rel_type))) if ext_full_rel_type is not None else None
 

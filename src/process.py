@@ -366,6 +366,6 @@ def convert_tgat_to_tspear(dataset_name):
     print("Converted TGAT files to TSPEAR format.")
 
 if __name__ == "__main__":
-    dataset_name = 'software'
+    dataset_name = 'myket'
     run(dataset_name, is_hetero=True, has_edge_feat=False)
     convert_tgat_to_tspear(dataset_name)
