@@ -147,9 +147,6 @@ class TemporalAttack:
 
             for i_rows, rows in x_df.groupby(x_df.index // args.batch_size):
                 if i_rows > 0:
-                    ################################################################
-                    ############## timestamp (common for all attacks) ##############
-                    ################################################################
                     num_ptb_batch = int(len(rows) * ptb_rate)
                     if num_ptb_batch <= 0:
                         continue
@@ -157,11 +154,6 @@ class TemporalAttack:
                     ptb_ts_batch = np.trunc(kde.sample(num_ptb_batch).reshape(-1)).astype(np.float32)
                     ptb_ts_batch = np.clip(ptb_ts_batch, rows.time.iloc[0], rows.time.iloc[-1])
 
-
-
-                    ################################################################
-                    ############ edge features (common for all attacks) ############
-                    ################################################################
                     t_batch_start = time.time()
                     ptb_rel_batch = None
                     ptb_edge_feats_batch = None
@@ -169,9 +161,6 @@ class TemporalAttack:
                         kde.fit(edge_feats[prev_rows['Unnamed: 0'].values])
                         ptb_edge_feats_batch = np.round(kde.sample(num_ptb_batch), 4)
 
-                    ################################################################
-                    ####################### (src, dst) pairs #######################
-                    ################################################################
                     if args.attack == "random":
                         ptb_src_batch = np.random.choice(list(row_src_set), num_ptb_batch, replace=True)
                         ptb_dst_batch = np.random.choice(list(row_dst_set), num_ptb_batch, replace=True)
@@ -231,7 +220,6 @@ class TemporalAttack:
                     elif args.attack == "proposed":
                         ######################## Edge scores #######################
                         if not use_hetero_attack:
-                            # ---------- original/global TSPEAR ----------
                             src_dst_pair = np.array(list(itertools.product(row_src_array, row_dst_array))).astype(np.int32)
                             root_nodes = src_dst_pair.T.reshape(1, -1).squeeze()
                             ts = ptb_ts_batch.min() * np.ones_like(root_nodes).astype(np.float32)
@@ -285,7 +273,7 @@ class TemporalAttack:
                             assert num_ptb_batch == len(ptb_src_batch) and num_ptb_batch == len(ptb_dst_batch)
 
                         else:
-                            # ---------- Extension: relation-by-relation TSPEAR ----------
+                            # Extension: relation-by-relation
                             ptb_src_parts = []
                             ptb_dst_parts = []
                             ptb_ts_parts = []
@@ -315,12 +303,12 @@ class TemporalAttack:
                                     if num_ptb_rel <= 0:
                                         continue
 
-                                    # ----- timestamps from this relation bucket
+                                    # timestamps from this relation bucket
                                     kde.fit(rel_rows.time.values.reshape(-1, 1))
                                     ptb_ts_rel = np.trunc(kde.sample(num_ptb_rel).reshape(-1)).astype(np.float32)
                                     ptb_ts_rel = np.clip(ptb_ts_rel, rel_rows.time.iloc[0], rel_rows.time.iloc[-1]).astype(np.float32)
 
-                                    # ----- edge features from previous rows of same relation (fallback to prev_rows)
+                                    # edge features from previous rows of same relation (fallback to prev_rows)
                                     if edge_feats is not None:
                                         prev_rel_rows = prev_rows[prev_rows['rel_type'] == rel_val]
                                         if len(prev_rel_rows) > 0:
@@ -328,7 +316,7 @@ class TemporalAttack:
                                         else:
                                             kde.fit(edge_feats[prev_rows['Unnamed: 0'].values])
                                         ptb_edge_feats_rel = np.round(kde.sample(num_ptb_rel), 4).astype(np.float32)
-                                    # ----- type-compatible candidate pools inside this relation bucket
+                                    #  type-compatible candidate pools inside this relation bucket
                                     src_type_list = rel_to_src_types[int(rel_val)]
                                     dst_type_list = rel_to_dst_types[int(rel_val)]
 
@@ -485,9 +473,6 @@ class TemporalAttack:
                     else:
                         print(f'* [Batch {i_df}-{i_rows}] t_batch_elapsed: {t_batch_elapsed:.4f}s, num_ptb_batch: {num_ptb_batch}, num_hungarian: {num_hungarian}, num_src_id: {num_src_id}/{len(row_src_set)}, num_dst_id: {num_dst_id}/{len(row_dst_set)}')
 
-                ################################################################
-                ################### Save previous batch info ###################
-                ################################################################
                 prev_rows = rows
                 seen_src_set.update(rows.src.values.tolist())
                 seen_dst_set.update(rows.dst.values.tolist())
@@ -513,7 +498,6 @@ class TemporalAttack:
                     row_dst_array = np.array(list(row_dst_set)).astype(np.int32)
                     inter = row_src_set.intersection(row_dst_set)
                 elif args.attack == "proposed":
-                    ####################### Process batch ######################
                     root_nodes = np.concatenate([rows.src.values, rows.dst.values]).astype(np.int32)
                     ts = np.concatenate([rows.time.values, rows.time.values]).astype(np.float32)
                     if sampler is not None:
